@@ -1,4 +1,4 @@
-# Preserve CameraX
+﻿# Preserve CameraX
 -keep class androidx.camera.** { *; }
 -dontwarn androidx.camera.**
 
@@ -21,3 +21,4 @@
     public static *** d(...);
     public static *** v(...);
 }
+
