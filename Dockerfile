@@ -49,3 +49,4 @@ RUN ./gradlew assembleDebug --no-daemon \
     -Dorg.gradle.jvmargs="-Xmx3072m -XX:+UseParallelGC" \
     -Dorg.gradle.workers.max=2 \
     --stacktrace
+u
