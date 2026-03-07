@@ -11,7 +11,8 @@
     <com.prasanna.capture360.ui.GuidanceOverlayView
         android:id="@+id/overlay"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:background="@android:color/transparent" />
 
     <ProgressBar
         android:id="@+id/progressBar"

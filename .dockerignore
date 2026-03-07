@@ -1,0 +1,14 @@
+.git
+.gradle
+.idea
+build/
+*.apk
+*.aab
+.gitignore
+README.md
+Dockerfile
+.dockerignore
+.DS_Store
+*.iml
+local.properties
+captures/

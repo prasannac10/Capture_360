@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  build:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      # Cache entire Gradle cache (~500MB, only downloads once)
+      - gradle_cache:/root/.gradle
+      # Cache Android SDK (~2GB, only downloads once)
+      - android_sdk:/sdk
+      # Mount output for easy access
+      - ./app/build:/app/app/build
+    working_dir: /app
+    environment:
+      - GRADLE_USER_HOME=/root/.gradle
+
+volumes:
+  gradle_cache:
+  android_sdk:
