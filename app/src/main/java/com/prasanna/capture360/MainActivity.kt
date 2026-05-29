@@ -97,13 +97,25 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-                Log.d(TAG, "All permissions granted")
+            // Log each permission result for debugging
+            permissions.forEachIndexed { index, perm ->
+                val result = if (index < grantResults.size) grantResults[index] else -1
+                Log.d(TAG, "Permission: $perm -> ${if (result == PackageManager.PERMISSION_GRANTED) "GRANTED" else "DENIED"}")
+            }
+
+            // Only require camera permission to proceed; storage is checked separately
+            val cameraIndex = permissions.indexOf(Manifest.permission.CAMERA)
+            val cameraGranted = cameraIndex >= 0 &&
+                    cameraIndex < grantResults.size &&
+                    grantResults[cameraIndex] == PackageManager.PERMISSION_GRANTED
+
+            if (cameraGranted) {
+                Log.d(TAG, "Camera permission granted, starting capture")
                 startCaptureLogic()
             } else {
-                Log.w(TAG, "Some permissions denied")
-                Toast.makeText(this, "Permissions denied - app needs Camera + Storage", Toast.LENGTH_LONG).show()
-                statusText.text = "Permissions required: Camera + Storage"
+                Log.w(TAG, "Camera permission denied")
+                Toast.makeText(this, "Camera permission is required", Toast.LENGTH_LONG).show()
+                statusText.text = "Camera permission required"
             }
         }
     }
@@ -118,11 +130,11 @@ class MainActivity : AppCompatActivity() {
         val permissions = mutableListOf(Manifest.permission.CAMERA)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
-            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
+        Log.d(TAG, "Requesting permissions: $permissions")
         ActivityCompat.requestPermissions(this, permissions.toTypedArray(), PERMISSION_REQUEST_CODE)
     }
 
@@ -130,24 +142,9 @@ class MainActivity : AppCompatActivity() {
         val cameraGranted = ContextCompat.checkSelfPermission(
             this, Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
-
-        val storageGranted = when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                ContextCompat.checkSelfPermission(
-                    this, Manifest.permission.READ_MEDIA_IMAGES
-                ) == PackageManager.PERMISSION_GRANTED
-            }
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
-                true // Android 11+: scoped storage, no runtime permission needed
-            }
-            else -> {
-                ContextCompat.checkSelfPermission(
-                    this, Manifest.permission.WRITE_EXTERNAL_STORAGE
-                ) == PackageManager.PERMISSION_GRANTED
-            }
-        }
-
-        return cameraGranted && storageGranted
+        Log.d(TAG, "allPermissionsGranted: camera=$cameraGranted, SDK=${Build.VERSION.SDK_INT}")
+        // Camera is the only hard requirement; storage uses scoped access on modern Android
+        return cameraGranted
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -292,6 +289,12 @@ class MainActivity : AppCompatActivity() {
     // ──────────────────────────────────────────────────────────────
 
     private fun initiateStitching() {
+        if (!openCVInitialized) {
+            statusText.text = "OpenCV not available - cannot stitch"
+            Log.e(TAG, "Stitching attempted but OpenCV not initialized")
+            return
+        }
+
         val directory = getExternalFilesDir(null)
         if (directory == null) {
             statusText.text = "Error: Cannot access storage directory"
@@ -440,11 +443,19 @@ class MainActivity : AppCompatActivity() {
     // Utility
     // ──────────────────────────────────────────────────────────────
 
+    private var openCVInitialized = false
+
     private fun initOpenCV() {
-        if (!org.opencv.android.OpenCVLoader.initDebug()) {
-            Log.e(TAG, "OpenCV init failed")
-        } else {
-            Log.d(TAG, "OpenCV initialized")
+        try {
+            openCVInitialized = org.opencv.android.OpenCVLoader.initDebug()
+            if (!openCVInitialized) {
+                Log.e(TAG, "OpenCV init failed")
+            } else {
+                Log.d(TAG, "OpenCV initialized successfully")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "OpenCV init exception", e)
+            openCVInitialized = false
         }
     }
 
