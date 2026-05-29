@@ -14,6 +14,15 @@
         android:layout_height="match_parent"
         android:background="@android:color/transparent" />
 
+    <!-- Flash overlay for capture feedback -->
+    <View
+        android:id="@+id/captureFlash"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FFFFFF"
+        android:alpha="0"
+        android:visibility="gone" />
+
     <ProgressBar
         android:id="@+id/progressBar"
         style="?android:attr/progressBarStyleHorizontal"
@@ -34,7 +43,7 @@
             android:id="@+id/btnFinish"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Finish &amp; Process"
+            android:text="Finish &amp; Stitch Panorama"
             android:visibility="gone" />
 
         <TextView
@@ -43,8 +52,9 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
             android:padding="10dp"
-            android:text="Align phone"
-            android:textColor="#FFFFFF" />
+            android:text="Align phone and rotate slowly"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
     </LinearLayout>
 
 </FrameLayout>
