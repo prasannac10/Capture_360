@@ -322,7 +322,7 @@ class MainActivity : AppCompatActivity() {
 
             try {
                 files.forEach { file ->
-                    val src = Imgcodecs.imread(file.absolutePath, Imgcodecs.IMREAD_REDUCED_COLOR_4)
+                    val src = Imgcodecs.imread(file.absolutePath, Imgcodecs.IMREAD_REDUCED_COLOR_2)
                     if (!src.empty()) {
                         imageMats.add(src)
                         Log.d(TAG, "Loaded: ${file.name} (${src.cols()}x${src.rows()})")
