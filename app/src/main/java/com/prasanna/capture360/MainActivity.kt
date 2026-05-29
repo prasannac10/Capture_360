@@ -36,6 +36,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.prasanna.capture360.stitching.PanoramaStitcher
 import org.opencv.core.Mat
 import org.opencv.imgcodecs.Imgcodecs
 import java.io.File
@@ -315,14 +316,13 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.Default) {
             val imageMats = mutableListOf<Mat>()
-            val panorama = Mat()
 
             try {
                 files.forEach { file ->
                     val src = Imgcodecs.imread(file.absolutePath, Imgcodecs.IMREAD_REDUCED_COLOR_4)
                     if (!src.empty()) {
                         imageMats.add(src)
-                        Log.d(TAG, "Loaded: ${file.name}")
+                        Log.d(TAG, "Loaded: ${file.name} (${src.cols()}x${src.rows()})")
                     } else {
                         Log.w(TAG, "Failed to load: ${file.name}")
                     }
@@ -337,14 +337,15 @@ class MainActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                val stitcher = org.opencv.photo.Stitcher.create(org.opencv.photo.Stitcher.PANORAMA)
-                val status = stitcher.stitch(imageMats, panorama)
+                val stitcher = PanoramaStitcher()
+                val result = stitcher.stitch(imageMats)
 
                 withContext(Dispatchers.Main) {
-                    when (status) {
-                        0 -> {
+                    when (result) {
+                        is PanoramaStitcher.StitchResult.Success -> {
                             val resultFile = File(directory, "panorama_result.jpg")
-                            Imgcodecs.imwrite(resultFile.absolutePath, panorama)
+                            Imgcodecs.imwrite(resultFile.absolutePath, result.panorama)
+                            result.panorama.release()
 
                             val gallerySuccess = saveImageToGallery(
                                 resultFile,
@@ -360,10 +361,10 @@ class MainActivity : AppCompatActivity() {
                             Log.d(TAG, "Panorama saved: ${resultFile.absolutePath}")
                             openPanoramaViewer(resultFile.absolutePath)
                         }
-                        1 -> statusText.text = "Stitching error: Need more overlap between images"
-                        2 -> statusText.text = "Stitching error: Camera parameters estimation failed"
-                        3 -> statusText.text = "Stitching error: Homography estimation failed"
-                        else -> statusText.text = "Stitching failed (code: $status)"
+                        is PanoramaStitcher.StitchResult.Error -> {
+                            statusText.text = "Stitching failed: ${result.message}"
+                            Log.e(TAG, "Stitch error: ${result.message}")
+                        }
                     }
 
                     btnFinish.isEnabled = true
@@ -379,7 +380,6 @@ class MainActivity : AppCompatActivity() {
                 }
             } finally {
                 imageMats.forEach { it.release() }
-                panorama.release()
             }
         }
     }
