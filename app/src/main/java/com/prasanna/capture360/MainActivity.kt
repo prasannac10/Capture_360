@@ -114,14 +114,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestRequiredPermissions() {
-        val permissions = mutableListOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE
-        )
+        val permissions = mutableListOf(Manifest.permission.CAMERA)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
+        } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
         ActivityCompat.requestPermissions(this, permissions.toTypedArray(), PERMISSION_REQUEST_CODE)
@@ -131,19 +129,24 @@ class MainActivity : AppCompatActivity() {
         val cameraGranted = ContextCompat.checkSelfPermission(
             this, Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
-        val writeStorageGranted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.WRITE_EXTERNAL_STORAGE
-        ) == PackageManager.PERMISSION_GRANTED
-        val readStorageGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                this, Manifest.permission.READ_MEDIA_IMAGES
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            ContextCompat.checkSelfPermission(
-                this, Manifest.permission.READ_EXTERNAL_STORAGE
-            ) == PackageManager.PERMISSION_GRANTED
+
+        val storageGranted = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
+                ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.READ_MEDIA_IMAGES
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                true // Android 11+: scoped storage, no runtime permission needed
+            }
+            else -> {
+                ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ) == PackageManager.PERMISSION_GRANTED
+            }
         }
-        return cameraGranted && writeStorageGranted && readStorageGranted
+
+        return cameraGranted && storageGranted
     }
 
     // ──────────────────────────────────────────────────────────────
