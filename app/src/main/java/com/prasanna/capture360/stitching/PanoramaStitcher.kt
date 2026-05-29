@@ -11,11 +11,12 @@ import org.opencv.core.MatOfDMatch
 import org.opencv.core.MatOfKeyPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
+import org.opencv.core.Scalar
 import org.opencv.core.Size
-import org.opencv.features2d.BFMatcher
 import org.opencv.features2d.DescriptorMatcher
 import org.opencv.features2d.ORB
 import org.opencv.imgproc.Imgproc
+import kotlin.math.abs
 
 class PanoramaStitcher {
 
@@ -56,7 +57,7 @@ class PanoramaStitcher {
                     stitchedCount++
                     Log.d(TAG, "Stitch ${i + 1} SUCCESS -> panorama now ${result.cols()}x${result.rows()}")
                 } else {
-                    Log.w(TAG, "Stitch ${i + 1} FAILED (not enough matching features), skipping")
+                    Log.w(TAG, "Stitch ${i + 1} FAILED, skipping")
                 }
             }
 
@@ -114,7 +115,6 @@ class PanoramaStitcher {
         val kpList1 = kp1.toList()
         val kpList2 = kp2.toList()
 
-        // Map new image points -> base image points
         val srcPoints = MatOfPoint2f(*goodMatches.map {
             kpList2[it.trainIdx].pt
         }.toTypedArray())
@@ -128,7 +128,6 @@ class PanoramaStitcher {
             srcPoints, dstPoints, Calib3d.RANSAC, RANSAC_THRESHOLD, inlierMask
         )
 
-        // Count inliers
         val inlierCount = inlierMask.toList().count { it.toInt() == 1 }
         Log.d(TAG, "Homography inliers: $inlierCount / ${goodMatches.size}")
 
@@ -143,13 +142,61 @@ class PanoramaStitcher {
             return null
         }
 
+        if (!isHomographyValid(homography, newImage.cols(), newImage.rows())) {
+            Log.w(TAG, "Homography rejected: failed geometric validation")
+            homography.release()
+            return null
+        }
+
         val result = warpAndBlend(base, newImage, homography)
         homography.release()
         return result
     }
 
+    private fun isHomographyValid(h: Mat, width: Int, height: Int): Boolean {
+        val corners = MatOfPoint2f(
+            Point(0.0, 0.0),
+            Point(width.toDouble(), 0.0),
+            Point(width.toDouble(), height.toDouble()),
+            Point(0.0, height.toDouble())
+        )
+        val transformed = MatOfPoint2f()
+        Core.perspectiveTransform(corners, transformed, h)
+        val pts = transformed.toArray()
+        corners.release()
+        transformed.release()
+
+        val area = quadArea(pts)
+        val origArea = (width * height).toDouble()
+        val areaRatio = area / origArea
+
+        if (areaRatio < 0.2 || areaRatio > 5.0) {
+            Log.w(TAG, "Homography area ratio: $areaRatio (rejected)")
+            return false
+        }
+
+        val det = h.get(0, 0)[0] * h.get(1, 1)[0] - h.get(0, 1)[0] * h.get(1, 0)[0]
+        if (det < 0) {
+            Log.w(TAG, "Homography flips orientation (det=$det)")
+            return false
+        }
+
+        Log.d(TAG, "Homography valid: areaRatio=${"%.2f".format(areaRatio)}, det=${"%.3f".format(det)}")
+        return true
+    }
+
+    private fun quadArea(pts: Array<Point>): Double {
+        var area = 0.0
+        val n = pts.size
+        for (i in 0 until n) {
+            val j = (i + 1) % n
+            area += pts[i].x * pts[j].y
+            area -= pts[j].x * pts[i].y
+        }
+        return abs(area) / 2.0
+    }
+
     private fun findGoodMatches(desc1: Mat, desc2: Mat): List<DMatch> {
-        // Use kNN matching with Lowe's ratio test for better quality
         val matcher = DescriptorMatcher.create(DescriptorMatcher.BRUTEFORCE_HAMMING)
         val knnMatches = mutableListOf<MatOfDMatch>()
         matcher.knnMatch(desc1, desc2, knnMatches, 2)
@@ -171,7 +218,6 @@ class PanoramaStitcher {
     }
 
     private fun warpAndBlend(base: Mat, newImage: Mat, homography: Mat): Mat {
-        // Transform corners of newImage to find bounding box in base coordinate space
         val corners = MatOfPoint2f(
             Point(0.0, 0.0),
             Point(newImage.cols().toDouble(), 0.0),
@@ -185,7 +231,6 @@ class PanoramaStitcher {
         corners.release()
         transformedCorners.release()
 
-        // Compute output canvas bounds (union of base image and warped newImage)
         var minX = 0.0
         var minY = 0.0
         var maxX = base.cols().toDouble()
@@ -206,7 +251,6 @@ class PanoramaStitcher {
             return base.clone()
         }
 
-        // Translation matrix to shift everything so minX,minY becomes 0,0
         val translation = Mat.eye(3, 3, CvType.CV_64F)
         translation.put(0, 2, -minX)
         translation.put(1, 2, -minY)
@@ -216,30 +260,89 @@ class PanoramaStitcher {
 
         val panoSize = Size(width.toDouble(), height.toDouble())
 
-        // Warp the new image into the output canvas
         val warpedNew = Mat()
         Imgproc.warpPerspective(newImage, warpedNew, adjustedH, panoSize)
 
-        // Place the base image into the output canvas (just translation, no warp)
         val warpedBase = Mat()
         Imgproc.warpPerspective(base, warpedBase, translation, panoSize)
 
         translation.release()
         adjustedH.release()
 
-        // Create masks for blending
+        // Create binary masks (CV_8U)
+        val baseMaskGray = Mat()
+        Imgproc.cvtColor(warpedBase, baseMaskGray, Imgproc.COLOR_BGR2GRAY)
         val baseMask = Mat()
-        Imgproc.cvtColor(warpedBase, baseMask, Imgproc.COLOR_BGR2GRAY)
-        Imgproc.threshold(baseMask, baseMask, 1.0, 255.0, Imgproc.THRESH_BINARY)
+        Imgproc.threshold(baseMaskGray, baseMask, 1.0, 255.0, Imgproc.THRESH_BINARY)
+        baseMaskGray.release()
 
+        val newMaskGray = Mat()
+        Imgproc.cvtColor(warpedNew, newMaskGray, Imgproc.COLOR_BGR2GRAY)
         val newMask = Mat()
-        Imgproc.cvtColor(warpedNew, newMask, Imgproc.COLOR_BGR2GRAY)
-        Imgproc.threshold(newMask, newMask, 1.0, 255.0, Imgproc.THRESH_BINARY)
+        Imgproc.threshold(newMaskGray, newMask, 1.0, 255.0, Imgproc.THRESH_BINARY)
+        newMaskGray.release()
 
-        // Start with warped new image as base canvas, then overlay base image on top
-        // Base image gets priority where it exists (preserves accumulated panorama)
-        val result = warpedNew.clone()
-        warpedBase.copyTo(result, baseMask)
+        // Distance transforms for feather blending weights
+        val baseDist = Mat()
+        Imgproc.distanceTransform(baseMask, baseDist, Imgproc.DIST_L2, 3)
+        val newDist = Mat()
+        Imgproc.distanceTransform(newMask, newDist, Imgproc.DIST_L2, 3)
+
+        // Compute total distance (baseDist + newDist), avoid division by zero
+        val totalDist = Mat()
+        Core.add(baseDist, newDist, totalDist)
+        // Replace zeros with 1 to avoid division by zero
+        val zeroMask = Mat()
+        Core.compare(totalDist, Scalar(0.0), zeroMask, Core.CMP_EQ)
+        totalDist.setTo(Scalar(1.0), zeroMask)
+        zeroMask.release()
+
+        // Compute blend weights as float [0..1]
+        val baseWeight = Mat()
+        Core.divide(baseDist, totalDist, baseWeight)
+        val newWeight = Mat()
+        Core.divide(newDist, totalDist, newWeight)
+
+        baseDist.release()
+        newDist.release()
+        totalDist.release()
+
+        // Convert images to float for weighted blending
+        val baseFloat = Mat()
+        val newFloat = Mat()
+        warpedBase.convertTo(baseFloat, CvType.CV_32FC3)
+        warpedNew.convertTo(newFloat, CvType.CV_32FC3)
+
+        // Expand single-channel weights to 3 channels
+        val baseWeight3 = Mat()
+        val newWeight3 = Mat()
+        val baseWeightList = listOf(baseWeight, baseWeight, baseWeight)
+        val newWeightList = listOf(newWeight, newWeight, newWeight)
+        Core.merge(baseWeightList, baseWeight3)
+        Core.merge(newWeightList, newWeight3)
+
+        baseWeight.release()
+        newWeight.release()
+
+        // Weighted blend: result = base * baseWeight + new * newWeight
+        val blendedBase = Mat()
+        val blendedNew = Mat()
+        Core.multiply(baseFloat, baseWeight3, blendedBase)
+        Core.multiply(newFloat, newWeight3, blendedNew)
+
+        baseFloat.release()
+        newFloat.release()
+        baseWeight3.release()
+        newWeight3.release()
+
+        val blendedFloat = Mat()
+        Core.add(blendedBase, blendedNew, blendedFloat)
+        blendedBase.release()
+        blendedNew.release()
+
+        val result = Mat()
+        blendedFloat.convertTo(result, CvType.CV_8UC3)
+        blendedFloat.release()
 
         baseMask.release()
         newMask.release()
