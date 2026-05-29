@@ -8,14 +8,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- Storage permissions for gallery access -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    
+
     <!-- Required hardware features -->
     <uses-feature
         android:name="android.hardware.sensor.accelerometer"
@@ -26,7 +27,7 @@
     <uses-feature
         android:name="android.hardware.camera"
         android:required="true" />
-    
+
     <!-- Optional hardware features -->
     <uses-feature
         android:name="android.hardware.camera.autofocus"
@@ -48,9 +49,13 @@
         </activity>
 
         <activity
+            android:name=".PanoramaViewerActivity"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
+
+        <activity
             android:name=".ViewerActivity"
             android:screenOrientation="landscape" />
 
     </application>
 </manifest>
-

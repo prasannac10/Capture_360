@@ -33,6 +33,6 @@ RUN chmod +x gradlew && \
 COPY . .
 
 # Build the APK
-RUN ./gradlew assembleDebug --no-daemon \
+RUN chmod +x gradlew && ./gradlew assembleDebug --no-daemon \
     -Dorg.gradle.jvmargs="-Xmx2048m" \
     --stacktrace
