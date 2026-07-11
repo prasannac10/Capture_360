@@ -1,0 +1,30 @@
+model:
+  feature_dim: 128
+  pano_height: 256
+  pano_width: 512
+
+training:
+  mode: geometry_only        # geometry_only lr=1e-4, epochs : 20 | supervised lr=5e-5, epochs : 10
+  batch_size: 1
+  lr: 1e-4
+  epochs: 20
+  use_ema: true
+  ema_decay: 0.999
+  training_data: "data/train"
+  val_data: "data/val"
+  model_path: checkpoints
+  model_name: simple_360.pt
+
+loss:
+  geometry:
+    smoothness_weight: 1.0
+  supervised:
+    l1_weight: 1.0
+
+inference:
+  checkpoint: checkpoints/simple_360.pt
+  save_outputs: true
+  save_intermediate: true
+  save_metadata: true
+  output_dir: "outputs/panoramas"
+  save_format: tiff        # png | jpg | npy

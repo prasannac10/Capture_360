@@ -1,0 +1,36 @@
+Download python from the below website
+https://www.python.org/downloads/  : Choose the correct files based on OS(Windows/Linux/Mac)
+
+Open command prompt or terminal from this(/PANO_AI) folder and follow the below steps
+
+# 1. Install all dependencies using below command
+pip install -r requirements.txt
+
+# 2. Prepare dataset in the below format
+data/
+├── train/
+│   ├── scene_0001/
+│   │   ├── images/
+│   │   │   ├── cam_00.png
+│   │   │   ├── cam_01.png
+│   │   │   └── ...
+│   │   ├── poses.pt
+│   │   ├── panorama.png        # only if supervised
+│   │   └── meta.yaml           # optional
+│   ├── scene_0002/
+│   └── ...
+├── val/
+│   └── ...
+└── test/
+    └── ...
+
+4. Modify the config.yaml file to store the output into right directories
+
+# 3. Train the model using below commad
+python train.py --config config.yaml
+
+# 4. Evaluate
+python eval.py --config config.yaml
+
+
+python inference.py --config config.yaml

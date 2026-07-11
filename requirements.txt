@@ -1,0 +1,16 @@
+# Core
+torch>=2.0
+torchvision>=0.15
+pyyaml
+numpy
+Pillow
+
+# Geometry / math
+scipy
+
+# HDR / EXR support (optional but recommended)
+OpenEXR
+Imath
+
+# Utils
+tqdm

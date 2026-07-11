@@ -1,0 +1,67 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Panorama Model Architecture">
+    <mxGraphModel dx="1420" dy="820" grid="1" gridSize="10">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Input -->
+        <mxCell id="input" value="Input Images&#10;Tensor[N,3,H,W]&#10;&#10;Latency: IO-bound&#10;Compute: negligible"
+                style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc"
+                vertex="1" parent="1">
+          <mxGeometry x="40" y="260" width="220" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- Encoder -->
+        <mxCell id="encoder" value="Image Encoder&#10;(CNN / ViT)&#10;&#10;Output: [N,C]&#10;Latency: ~5–10 ms / image (GPU)&#10;Compute: HIGH"
+                style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7"
+                vertex="1" parent="1">
+          <mxGeometry x="320" y="260" width="260" height="140" as="geometry"/>
+        </mxCell>
+
+        <!-- Aggregator -->
+        <mxCell id="aggregator" value="Set Aggregator&#10;(Mean / Attention)&#10;&#10;Output: [C]&#10;Latency: &lt;1 ms&#10;Compute: LOW"
+                style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc"
+                vertex="1" parent="1">
+          <mxGeometry x="640" y="260" width="260" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- Spherical Fusion -->
+        <mxCell id="fusion" value="Spherical Fusion&#10;(Pose-aware projection)&#10;&#10;Output: [C,Hs,Ws]&#10;Latency: 8–15 ms&#10;Compute: MEDIUM–HIGH"
+                style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4"
+                vertex="1" parent="1">
+          <mxGeometry x="960" y="240" width="300" height="160" as="geometry"/>
+        </mxCell>
+
+        <!-- Decoder -->
+        <mxCell id="decoder" value="Panorama Decoder&#10;(UNet / Conv Head)&#10;&#10;Output: [3,Hp,Wp]&#10;Latency: 10–20 ms&#10;Compute: HIGH"
+                style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc"
+                vertex="1" parent="1">
+          <mxGeometry x="1320" y="260" width="300" height="160" as="geometry"/>
+        </mxCell>
+
+        <!-- Edges -->
+        <mxCell id="e1" style="endArrow=block" edge="1" parent="1"
+                source="input" target="encoder">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e2" style="endArrow=block" edge="1" parent="1"
+                source="encoder" target="aggregator">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e3" style="endArrow=block" edge="1" parent="1"
+                source="aggregator" target="fusion">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e4" style="endArrow=block" edge="1" parent="1"
+                source="fusion" target="decoder">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
