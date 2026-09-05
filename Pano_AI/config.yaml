@@ -4,12 +4,15 @@ model:
   pano_width: 512
 
 input:
-  num_frames: 6
+  min_frames: 4
+  max_frames: 30
+  recommended_fisheye_frames: [4, 8]
+  recommended_pinhole_frames: [20, 30]
   height: 224
   width: 224
   normalization_mean: [0.0, 0.0, 0.0]
   normalization_std: [1.0, 1.0, 1.0]
-  fisheye_model: 180_degree_equidistant
+  supported_projections: [fisheye_180, pinhole]
 
 training:
   mode: supervised
