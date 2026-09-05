@@ -48,11 +48,15 @@ def load_camera_profile(scene):
         fx,fy,cx,cy=_pinhole_from_fov(d,w,h)
     else:
         raise ValueError(f'{path} needs fx, fy, cx, cy or horizontal_fov_deg for pinhole projection')
-    return {'projection':'pinhole','fx_norm':2.0*fx/w,'fy_norm':2.0*fy/h,'cx_norm':2.0*cx/w-1.0,'cy_norm':2.0*cy/h-1.0,'image_width':int(w),'image_height':int(h)}
+    # Convert intrinsics from the original image into the 224x224 letterboxed image.
+    s=min(INPUT_SIZE[1]/float(w),INPUT_SIZE[0]/float(h)); nw=w*s; nh=h*s
+    fx2,fy2=fx*s,fy*s; cx2=cx*s+(INPUT_SIZE[1]-nw)/2.0; cy2=cy*s+(INPUT_SIZE[0]-nh)/2.0
+    # grid_sample with align_corners=True maps pixel x/y to [-1,1] using size-1.
+    return {'projection':'pinhole','fx_norm':2.0*fx2/(INPUT_SIZE[1]-1),'fy_norm':2.0*fy2/(INPUT_SIZE[0]-1),'cx_norm':2.0*cx2/(INPUT_SIZE[1]-1)-1.0,'cy_norm':2.0*cy2/(INPUT_SIZE[0]-1)-1.0,'image_width':int(w),'image_height':int(h)}
 
 class PanoramaDataset(Dataset):
     """Scene: images/* + poses.pt + panorama.png + optional camera.json.
-    camera.json selects the projection per scene; N is variable (4..30).
+    camera.json selects fisheye or pinhole per scene; N is variable (4..30).
     """
     def __init__(self,root,has_gt=True,min_frames=MIN_FRAMES,max_frames=MAX_FRAMES):
         self.root=Path(root); self.has_gt=has_gt; self.min_frames=min_frames; self.max_frames=max_frames
