@@ -1,15 +1,14 @@
 import torch.nn as nn
 
+
 class ImageEncoder(nn.Module):
-    def __init__(self, dim):
+    """CNN encoder that deliberately preserves spatial information."""
+    def __init__(self, dim: int):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(3, 32, 3, 2, 1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(32, dim)
+            nn.Conv2d(3, 32, 3, 2, 1), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, 3, 2, 1), nn.ReLU(inplace=True),
+            nn.Conv2d(64, dim, 3, 2, 1), nn.ReLU(inplace=True),
         )
-
     def forward(self, x):
         return self.net(x)

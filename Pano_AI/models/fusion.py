@@ -1,17 +1,7 @@
-import torch
-import torch.nn as nn
+from models.spherical import spherical_project
 
-def spherical_project(features, poses):
-    """
-    features: (B, N, D)
-    poses:    (B, N, 2)  yaw, pitch in degrees
-    """
-    yaw = poses[..., 0] / 360.0
-    pitch = poses[..., 1] / 180.0
 
-    weight = 1.0 + yaw.unsqueeze(-1) + pitch.unsqueeze(-1)
-    return features * weight
-
-class SphericalFusion(nn.Module):
-    def forward(self, feats, poses):
-        return spherical_project(feats, poses)
+class SphericalFusion:
+    """Compatibility wrapper; spherical_project has one canonical implementation."""
+    def __call__(self, feats, rotations, pano_h, pano_w, frame_mask=None):
+        return spherical_project(feats, rotations, pano_h, pano_w, frame_mask)

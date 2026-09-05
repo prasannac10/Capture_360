@@ -1,27 +1,10 @@
 import torch
 import torch.nn as nn
-from spherical import spherical_project
+from models.spherical import spherical_project
 
 class PanoramaModel(nn.Module):
     def __init__(self, encoder, aggregator, decoder, pano_h, pano_w):
-        super().__init__()
-        self.encoder = encoder
-        self.aggregator = aggregator
-        self.decoder = decoder
-        self.pano_h = pano_h
-        self.pano_w = pano_w
-
-        self.last_spherical = None
-
-    def forward(self, images, rotations):
-        feats = self.encoder(images)              # [N, C]
-        ctx = self.aggregator(feats)               # [C]
-
-        pano_feat = spherical_project(
-            feats, rotations, self.pano_h, self.pano_w
-        )
-
-        self.last_spherical = pano_feat
-
-        pano_feat = pano_feat * torch.sigmoid(ctx[:, None, None])
-        return self.decoder(pano_feat)
+        super().__init__(); self.encoder=encoder; self.aggregator=aggregator; self.decoder=decoder; self.pano_h=pano_h; self.pano_w=pano_w; self.last_spherical=None
+    def forward(self, images, rotations, frame_mask=None):
+        if images.ndim != 5: raise ValueError(f'images must be [B,N,3,H,W], got {images.shape}')
+        b,n=images.shape[:2]; f=self.encoder(images.reshape(b*n,*images.shape[2:])); f=f.reshape(b,n,f.shape[1],f.shape[2],f.shape[3]); ctx=self.aggregator(f,frame_mask); pano=spherical_project(f,rotations,self.pano_h,self.pano_w,frame_mask); self.last_spherical=pano; return self.decoder(pano*torch.sigmoid(ctx).unsqueeze(-1).unsqueeze(-1))

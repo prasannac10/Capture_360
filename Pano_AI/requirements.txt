@@ -8,7 +8,10 @@ Pillow
 # Geometry / math
 scipy
 
-# HDR / EXR support (optional but recommended)
+# Export
+onnx>=1.16
+
+# HDR / EXR support (optional)
 OpenEXR
 Imath
 

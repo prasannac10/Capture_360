@@ -1,82 +1,66 @@
-# models/spherical.py
-import torch, torch.nn.functional as F
-
-def euler_to_matrix(yaw, pitch, roll):
-    cy, sy = torch.cos(yaw), torch.sin(yaw)
-    cp, sp = torch.cos(pitch), torch.sin(pitch)
-    cr, sr = torch.cos(roll), torch.sin(roll)
-
-    R = torch.zeros((yaw.shape[0], 3, 3), device=yaw.device)
-    R[:,0,0] = cy*cr + sy*sp*sr
-    R[:,0,1] = sr*cp
-    R[:,0,2] = -sy*cr + cy*sp*sr
-    R[:,1,0] = -cy*sr + sy*sp*cr
-    R[:,1,1] = cr*cp
-    R[:,1,2] = sr*sy + cy*sp*cr
-    R[:,2,0] = sy*cp
-    R[:,2,1] = -sp
-    R[:,2,2] = cy*cp
-    return R
-
-# def spherical_project(feats, poses, B, N, out_hw=(256, 512)):
-#     device = feats.device
-#     C = feats.shape[1]
-#     Hs, Ws = out_hw
-
-#     pano = torch.zeros(B, C, Hs, Ws, device=device)
-#     weight = torch.zeros(B, 1, Hs, Ws, device=device)
-
-#     theta = torch.linspace(-torch.pi, torch.pi, Ws, device=device)
-#     phi   = torch.linspace(-torch.pi/2, torch.pi/2, Hs, device=device)
-#     phi, theta = torch.meshgrid(phi, theta, indexing="ij")
-
-#     dirs = torch.stack([
-#         torch.cos(phi)*torch.sin(theta),
-#         torch.sin(phi),
-#         torch.cos(phi)*torch.cos(theta)
-#     ], dim=-1)
-
-#     feats = feats.view(B, N, C, *feats.shape[-2:])
-
-#     for i in range(N):
-#         R = euler_to_matrix(*poses[:,i].T)
-#         d = torch.einsum("hwc,bcj->bhwj", dirs, R)
-
-#         u = torch.atan2(d[...,0], d[...,2]) / torch.pi
-#         v = d[...,1] / (torch.pi/2)
-#         grid = torch.stack([u, v], dim=-1)
-
-#         sampled = F.grid_sample(feats[:,i], grid, align_corners=True)
-#         pano += sampled
-#         weight += (sampled.abs().sum(1,keepdim=True)>0).float()
-
-#     return pano / (weight + 1e-6)
+import math
+import torch
+import torch.nn.functional as F
 
 
-# spherical.py
+def _equirect_dirs(height, width, device, dtype):
+    theta = torch.linspace(-math.pi, math.pi, width, device=device, dtype=dtype)
+    phi = torch.linspace(-math.pi / 2, math.pi / 2, height, device=device, dtype=dtype)
+    phi, theta = torch.meshgrid(phi, theta, indexing="ij")
+    return torch.stack((torch.cos(phi) * torch.sin(theta), torch.sin(phi), torch.cos(phi) * torch.cos(theta)), dim=-1)
 
-def spherical_project(features, rotations, pano_h, pano_w):
-    """
-    features: [N, C]
-    rotations: [N,3,3]
-    returns: [C, pano_h, pano_w]
-    """
 
-    C = features.shape[1]
-    canvas = torch.zeros(C, pano_h, pano_w, device=features.device)
-    weight = torch.zeros(1, pano_h, pano_w, device=features.device)
+def _fisheye_grid(camera_dirs):
+    """Project unit camera rays through an assumed 180-degree equidistant fisheye."""
+    z = camera_dirs[..., 2].clamp(-1.0, 1.0)
+    theta = torch.acos(z)
+    xy_norm = torch.sqrt(camera_dirs[..., 0] ** 2 + camera_dirs[..., 1] ** 2).clamp_min(1e-8)
+    radius = theta / (math.pi / 2.0)
+    u = radius * camera_dirs[..., 0] / xy_norm
+    v = radius * camera_dirs[..., 1] / xy_norm
+    valid = (theta <= math.pi / 2.0) & (radius <= 1.0)
+    return torch.stack((u, v), dim=-1), valid
 
-    for i in range(features.shape[0]):
-        R = rotations[i]
 
-        # Simplified mapping: yaw -> x, pitch -> y
-        yaw = torch.atan2(R[1,0], R[0,0])
-        pitch = torch.asin(-R[2,0])
+def spherical_project(features, rotations, pano_h, pano_w, frame_mask=None):
+    """Differentiable inverse warp from [B,N,C,h,w] views into [B,C,pano_h,pano_w]."""
+    if features.ndim != 5:
+        raise ValueError(f"features must be [B,N,C,h,w], got {features.shape}")
+    bsz, num_views, channels, _, _ = features.shape
+    device, dtype = features.device, features.dtype
+    world_dirs = _equirect_dirs(pano_h, pano_w, device, dtype).unsqueeze(0).expand(bsz, -1, -1, -1)
+    canvas = torch.zeros(bsz, channels, pano_h, pano_w, device=device, dtype=dtype)
+    weights = torch.zeros(bsz, 1, pano_h, pano_w, device=device, dtype=dtype)
+    for i in range(num_views):
+        camera_dirs = torch.einsum("bhwc,bcj->bhwj", world_dirs, rotations[:, i])
+        grid, valid = _fisheye_grid(camera_dirs)
+        sampled = F.grid_sample(features[:, i], grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+        visibility = valid.to(dtype) * camera_dirs[..., 2].clamp_min(0.0)
+        if frame_mask is not None:
+            visibility = visibility * frame_mask[:, i].to(dtype).view(bsz, 1, 1)
+        canvas = canvas + sampled * visibility.unsqueeze(1)
+        weights = weights + visibility.unsqueeze(1)
+    return canvas / weights.clamp_min(1e-6)
 
-        x = ((yaw + torch.pi) / (2 * torch.pi) * pano_w).long().clamp(0, pano_w-1)
-        y = ((pitch + torch.pi/2) / torch.pi * pano_h).long().clamp(0, pano_h-1)
 
-        canvas[:, y, x] += features[i]
-        weight[:, y, x] += 1.0
-
-    return canvas / (weight + 1e-6)
+def pano_to_views(pano, rotations, image_h, image_w, frame_mask=None):
+    """Differentiably reproject an equirectangular panorama into fisheye views."""
+    bsz, _, _, _ = pano.shape
+    device, dtype = pano.device, pano.dtype
+    yy, xx = torch.meshgrid(torch.linspace(-1.0, 1.0, image_h, device=device, dtype=dtype), torch.linspace(-1.0, 1.0, image_w, device=device, dtype=dtype), indexing="ij")
+    radius = torch.sqrt(xx * xx + yy * yy)
+    theta = radius.clamp_max(1.0) * (math.pi / 2.0)
+    sin_theta = torch.sin(theta)
+    xy_norm = radius.clamp_min(1e-8)
+    camera_dirs = torch.stack((sin_theta * xx / xy_norm, sin_theta * yy / xy_norm, torch.cos(theta)), dim=-1)
+    valid = radius <= 1.0
+    outputs = []
+    for i in range(rotations.shape[1]):
+        world_dirs = torch.einsum("hwc,bcj->bhwj", camera_dirs, rotations[:, i].transpose(1, 2))
+        x = torch.atan2(world_dirs[..., 0], world_dirs[..., 2]) / math.pi
+        y = world_dirs[..., 1] / (math.pi / 2.0)
+        sampled = F.grid_sample(pano, torch.stack((x, y), dim=-1), mode="bilinear", padding_mode="border", align_corners=True)
+        if frame_mask is not None:
+            sampled = sampled * frame_mask[:, i].to(dtype).view(bsz, 1, 1, 1)
+        outputs.append(sampled)
+    return torch.stack(outputs, dim=1), valid
