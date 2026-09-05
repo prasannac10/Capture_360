@@ -1,0 +1,27 @@
+# Pano_AI is an independent Python project. Run every command with Pano_AI/ as the working directory.
+# Imports intentionally use: from data..., from models..., from utils...
+
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Real dataset
+# data/train/scene_0001/images/*.png
+# data/train/scene_0001/poses.pt
+# data/train/scene_0001/panorama.png
+# data/val/... (same structure)
+# poses.pt is [N,3] yaw/pitch/roll degrees. panorama.png is the single final label.
+
+# 3. Train
+python train.py --config config.yaml
+
+# 4. Evaluate
+python eval.py --config config.yaml
+
+# 5. Inference
+python inference.py --config config.yaml
+
+# 6. Export trained model for Android
+python export.py --config config.yaml --checkpoint checkpoints/simple_360.pt --output artifacts/pano_model.onnx
+
+# Copy artifacts/pano_model.onnx to app/src/main/assets/pano_model.onnx only after a trained checkpoint exists.
+# Android uses ONNX Runtime with fixed [1,6,3,224,224] RGB inputs and [1,6,3,3] camera-to-world rotations.

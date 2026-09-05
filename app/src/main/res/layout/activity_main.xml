@@ -1,50 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent">
-
-    <androidx.camera.view.PreviewView
-        android:id="@+id/preview"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
-    <com.prasanna.capture360.ui.GuidanceOverlayView
-        android:id="@+id/overlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@android:color/transparent" />
-
-    <ProgressBar
-        android:id="@+id/progressBar"
-        style="?android:attr/progressBarStyleHorizontal"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_margin="20dp"
-        android:max="100" />
-
-    <LinearLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="80dp"
-        android:gravity="center"
-        android:orientation="vertical">
-
-        <Button
-            android:id="@+id/btnFinish"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Finish &amp; Process"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:padding="10dp"
-            android:text="Align phone"
-            android:textColor="#FFFFFF" />
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
+    <androidx.camera.view.PreviewView android:id="@+id/preview" android:layout_width="match_parent" android:layout_height="match_parent" />
+    <com.prasanna.capture360.ui.GuidanceOverlayView android:id="@+id/overlay" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@android:color/transparent" />
+    <ProgressBar android:id="@+id/progressBar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_margin="20dp" android:max="100" />
+    <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="bottom|center_horizontal" android:layout_marginBottom="80dp" android:gravity="center" android:orientation="vertical">
+        <Switch android:id="@+id/modeSwitch" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="false" android:text="OpenCV" android:textColor="#FFFFFF" />
+        <Button android:id="@+id/btnFinish" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Finish &amp; Process" android:visibility="gone" />
+        <TextView android:id="@+id/statusText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:padding="10dp" android:text="Align phone" android:textColor="#FFFFFF" />
     </LinearLayout>
-
 </FrameLayout>
