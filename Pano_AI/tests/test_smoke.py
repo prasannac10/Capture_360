@@ -1,33 +1,75 @@
-import argparse
+"""Architecture smoke tests; no customer dataset is required."""
+
 import sys
 from pathlib import Path
+
 import torch
 import yaml
-from torch.utils.data import DataLoader, Subset
-ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT))
-from data.collate import panorama_collate_fn
-from data.dataset import PanoramaDataset
-from losses.supervised import supervised_loss
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from models.aggregator import SetAggregator
+from models.color_enhance import ColorEnhancementUNet
 from models.decoder import PanoramaDecoder
 from models.encoder import ImageEncoder
+from models.glare_removal import GlareRemovalUNet
+from models.nadir_zenith import NadirZenithInpainter
 from models.panorama_model import PanoramaModel
 
 
+def _batch(batch_size, frames):
+    images = torch.rand(batch_size, frames, 3, 224, 224)
+    rotations = torch.eye(3).reshape(1, 1, 3, 3).repeat(batch_size, frames, 1, 1)
+    mask = torch.ones(batch_size, frames, dtype=torch.bool)
+    camera = torch.zeros(batch_size, frames, 5)
+    camera[..., 0] = 1.0
+    camera[..., 1] = 1.0
+    return images, rotations, mask, camera
+
+
+def _model(cfg):
+    dim = cfg["model"]["feature_dim"]
+    return PanoramaModel(ImageEncoder(dim, pretrained=False), SetAggregator(dim), PanoramaDecoder(dim), 256, 512)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Real-data forward/backward smoke test"); parser.add_argument("--config", default=str(ROOT / "config.yaml")); parser.add_argument("--samples", type=int, default=3); args = parser.parse_args()
-    with open(args.config, encoding="utf-8") as handle: cfg = yaml.safe_load(handle)
-    dataset = PanoramaDataset(cfg["training"]["training_data"], has_gt=True)
-    count = min(args.samples, len(dataset))
-    if count < 2: raise RuntimeError("Smoke test requires at least 2 real scene sets")
-    loader = DataLoader(Subset(dataset, range(count)), batch_size=count, collate_fn=panorama_collate_fn)
-    batch = next(iter(loader))
-    model = PanoramaModel(ImageEncoder(cfg["model"]["feature_dim"]), SetAggregator(cfg["model"]["feature_dim"]), PanoramaDecoder(cfg["model"]["feature_dim"]), cfg["model"]["pano_height"], cfg["model"]["pano_width"])
-    pred = model(batch["images"], batch["rotations"], batch["mask"])
-    assert tuple(pred.shape) == (count, 3, 256, 512), pred.shape
-    loss = supervised_loss(pred, batch["gt_panorama"]); loss.backward()
-    assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
-    print(f"SMOKE PASS: {count} real scenes, output={tuple(pred.shape)}, loss={loss.item():.6f}")
+    with open(ROOT / "config.yaml", encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle)
+    model = _model(cfg)
+    for frames in (6, 24):
+        images, rotations, mask, camera = _batch(1, frames)
+        if frames == 24:
+            camera[..., 4] = 1.0
+        pred = model(images, rotations, mask, camera)
+        assert tuple(pred.shape) == (1, 3, 256, 512), pred.shape
+        loss = pred.mean()
+        loss.backward()
+        assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
+        model.zero_grad(set_to_none=True)
+
+    # Mixed-N padded batch: fisheye scene has six valid frames, phone scene 24.
+    images = torch.rand(2, 24, 3, 224, 224)
+    rotations = torch.eye(3).reshape(1, 1, 3, 3).repeat(2, 24, 1, 1)
+    mask = torch.zeros(2, 24, dtype=torch.bool)
+    mask[0, :6] = True
+    mask[1, :24] = True
+    camera = torch.zeros(2, 24, 5)
+    camera[..., :2] = 1.0
+    camera[1, :, 4] = 1.0
+    pred = model(images, rotations, mask, camera)
+    assert tuple(pred.shape) == (2, 3, 256, 512)
+
+    x = torch.rand(2, 3, 128, 256)
+    for stage in (GlareRemovalUNet(), ColorEnhancementUNet()):
+        y = stage(x)
+        assert y.shape == x.shape and torch.isfinite(y).all()
+        y.mean().backward()
+    pole = NadirZenithInpainter()
+    y = pole(x, torch.ones(2, 1, 128, 256))
+    assert y.shape == x.shape and torch.isfinite(y).all()
+    print("SMOKE PASS: fisheye N=6, phone N=24, mixed-N batch, panorama decoder, and correction U-Nets")
 
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    main()
