@@ -1,8 +1,8 @@
-import torch.nn as nn
+"""Learned glare correction stage."""
 
-class GlareRemovalUNet(nn.Module):
-    """Compact restoration backbone intended for fine-tuning on glare-correction pairs."""
-    def __init__(self, channels=32):
-        super().__init__()
-        self.net=nn.Sequential(nn.Conv2d(3,channels,3,padding=1),nn.ReLU(inplace=True),nn.Conv2d(channels,channels,3,padding=1),nn.ReLU(inplace=True),nn.Conv2d(channels,3,3,padding=1))
-    def forward(self,x): return (x+self.net(x)).clamp(0,1)
+from models.restoration_backbone import RestorationUNet
+
+
+class GlareRemovalUNet(RestorationUNet):
+    def __init__(self, channels: int = 32):
+        super().__init__(in_channels=3, out_channels=3, base_channels=channels)

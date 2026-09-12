@@ -1,10 +1,13 @@
-import torch
-import torch.nn as nn
+"""Mask-aware learned nadir/zenith inpainting stage."""
 
-class NadirZenithInpainter(nn.Module):
-    """Small partial-conv-style residual inpainter; fine-tune on paired pole crops."""
-    def __init__(self, channels=32):
-        super().__init__()
-        self.net=nn.Sequential(nn.Conv2d(4,channels,3,padding=1),nn.ReLU(inplace=True),nn.Conv2d(channels,channels,3,padding=1),nn.ReLU(inplace=True),nn.Conv2d(channels,3,3,padding=1))
-    def forward(self,image,mask):
-        return (image + self.net(torch.cat([image,mask],1))).clamp(0,1)
+from models.restoration_backbone import RestorationUNet
+
+
+class NadirZenithInpainter(RestorationUNet):
+    """RGB + correction-mask U-Net; mask value 1 marks pixels to repair."""
+
+    def __init__(self, channels: int = 32):
+        super().__init__(in_channels=3, out_channels=3, base_channels=channels, mask_channels=1)
+
+    def forward(self, image, mask):
+        return super().forward(image, mask)
