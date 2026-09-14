@@ -38,6 +38,7 @@ loss:
     l1_weight: 1.0
     ssim_weight: 0.0
 
+# ORIGINAL CORRECTION STAGES
 correction:
   allow_untrained: false
   checkpoints:
@@ -51,6 +52,27 @@ correction:
     color: true
     sharpen: true
 
+# NEW ADVANCED CORRECTION STAGES (disabled by default, enable after training)
+advanced_corrections:
+  allow_untrained: false
+  checkpoints:
+    parallax: "checkpoints/parallax_best.pt"
+    ghost_removal: "checkpoints/ghost_removal_best.pt"
+    seam_blending: "checkpoints/seam_blending_best.pt"
+    overlap_detection: "checkpoints/overlap_detection_best.pt"
+    parallax_flow: "checkpoints/parallax_flow_best.pt"
+  toggles:
+    # Parallax correction: handles depth-based distortions
+    parallax: false
+    # Ghost removal: removes artifacts from moving objects/exposure inconsistencies
+    ghost_removal: false
+    # Seam blending: learns optimal blending at image boundaries
+    seam_blending: false
+    # Overlap detection: validates and characterizes overlap regions
+    overlap_detection: false
+    # Parallax flow: computes directional flow field for parallax analysis
+    parallax_flow: false
+
 inference:
   checkpoint: "checkpoints/panorama_best.pt"
   save_outputs: true
@@ -58,3 +80,29 @@ inference:
   save_metadata: true
   output_dir: "outputs/panoramas"
   save_format: tiff
+
+# CLASSICAL (OpenCV) CORRECTION OPTIONS
+# Set use_classical_* to true to use OpenCV methods instead of learned models
+classical_methods:
+  use_classical_overlap_detection: false  # OverlapDetectorCV
+  use_classical_parallax_correction: false  # ParallaxCorrectionCV
+  use_classical_seam_blending: false  # SeamBlendingCV (multiband, feather, graph_cut)
+  use_classical_ghost_removal: false  # GhostRemovalCV
+
+# Classical method parameters
+classical_parameters:
+  overlap_detection:
+    feature_detector: "orb"  # "orb", "sift", or "akaze"
+    min_matches: 4
+  
+  parallax_correction:
+    depth_estimation_method: "stereo_sgbm"
+    interpolation_method: "gaussian_blur"
+  
+  seam_blending:
+    blend_type: "multiband"  # "multiband", "feather", or "graph_cut"
+    seam_sigma: 15.0
+  
+  ghost_removal:
+    threshold_ratio: 0.3
+    inpainting_method: "poisson"  # "poisson" or "median_filter"
