@@ -1,0 +1,5 @@
+model: glare
+lr: 0.0001
+epochs: 20
+batch_size: 4
+loss: l1

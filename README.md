@@ -1,106 +1,55 @@
-﻿# Capture360 Android
+# Capture360
 
-A guided 360° image capture system for Android that tracks device orientation and captures frames with optimal spatial distribution. The app combines device sensors with intelligent analysis to ensure comprehensive coverage of a spherical view.
+Capture360 has two independently developed components:
 
-## Key Features
+- **`app/`** — Android guided 360 capture application.
+- **`Pano_AI/`** — Python learned panorama stitcher.
 
-- **IMU Sensor Fusion (Gyro + Accel + Magnetometer)**  
-  Combines data from gyroscope, accelerometer, and magnetometer using a complementary filter to provide accurate, drift-resistant device orientation estimates. Enables real-time tracking of device position in 3D space.
+## Android stitching architecture
 
-- **Drift Correction**  
-  Automatically corrects gyroscopic integration drift over time. Complements high-frequency gyroscope data with slower, more stable magnetometer and accelerometer readings to maintain long-term heading accuracy.
+The app uses a shared capture/stitch/persist shell behind `PanoramaStitcher`. The user can switch between **OpenCV** and **AI** stitching. Captured frames retain their sensor-fusion poses; the AI path consumes those poses instead of inferring ordering from file timestamps.
 
-- **Angular Coverage Tracking**  
-  Monitors which regions of the 360° sphere have been adequately captured based on device orientation. Provides spatial distribution analysis to guide users toward uncaptured areas and ensure uniform coverage across all angles.
+Both paths pass through a shared, ordered `PanoramaCorrection` chain. The stages are independently toggleable: equirectangular finish, nadir/zenith cleanup, glare removal, dot removal, color correction, and sharpening. They are disabled/no-op by default because the available dataset contains only raw->final labels. Training correction stages requires synthetic per-step supervision and is deferred.
 
-- **Real-time Heatmap Visualization**  
-  Displays a live heatmap overlay on the camera preview, showing coverage density. Helps users identify gaps and balance capture distribution without having to check separate statistics.
+## Learned stitcher
 
-- **Frame Gating for Stable Capture**  
-  Automatically filters frames based on device motion stability thresholds. Discards frames captured during jerky movement and captures only when the device orientation is stable, improving stitching quality and reducing motion artifacts.
+`Pano_AI/` expects approximately 14,000 real scene sets with `images/*.png`, `poses.pt`, and one final `panorama.png`. Run Python commands **from inside `Pano_AI/`** because the package imports use `data`, `models`, and `utils` directly.
 
-## Requirements
-
-- Android Studio Flamingo+
-- Min SDK 26
-- Physical device with gyroscope
-
-## Tools & Environment
-
-### For Docker builds:
-
-- **Docker** — the only requirement
-- The Docker image includes JDK 11+, Android SDK, build-tools, and NDK (if needed for native code)
-- You can build the project entirely within a container; no local SDK/NDK/JDK installation required
-
-### For Android Studio / local command-line builds:
-
-- Java JDK 11 or 17 (ensure `JAVA_HOME` points to the JDK)
-- Android SDK (platforms and build-tools for API 26+)
-- Android NDK (if building native code in `app/cpp`)
-- Gradle wrapper (project includes `gradlew` and wrapper files)
-
-### Network and caching notes:
-
-The Docker build and Gradle wrapper download require network access to `services.gradle.org`. If your environment restricts outbound TLS traffic, pre-download the Gradle distribution or provide CA certs in the build image.
+The model is trained on fisheye imagery. Narrow-FOV rectilinear phone-lens adaptation is explicitly deferred and requires a new dataset with logged capture poses.
 
 ## Build
 
-### Android Studio (recommended)
-
-1. Clone the repository
-2. Open the project in Android Studio
-3. Let Android Studio sync Gradle and download dependencies
-4. Build and run on a connected device
-
-### Command-line (Linux / macOS / Windows WSL / PowerShell)
+From the repository root:
 
 ```bash
-# From the project root
 ./gradlew assembleDebug
-./gradlew installDebug    # installs on a connected device
 ```
 
-### Build inside Docker (optional)
+or on Windows PowerShell:
 
-1. Build the Docker image:
+```powershell
+./gradlew.bat assembleDebug
+```
+
+The Docker build uses the root `Dockerfile`.
+
+## AI model deployment
+
+ONNX Runtime is the selected Android runtime. After training:
 
 ```bash
-docker build -t capture360 .
+cd Pano_AI
+python export.py --config config.yaml --checkpoint checkpoints/simple_360.pt --output artifacts/pano_model.onnx
 ```
 
-2. If the Docker build fails while downloading Gradle, ensure HTTPS is allowed and CA certificates are present in the base image. Alternatively, pre-populate the Gradle wrapper cache on the host and mount it into `/root/.gradle` when building.
+Copy the generated `pano_model.onnx` to `app/src/main/assets/`. `model_metadata.json` documents the fixed preprocessing and tensor contract. The repository intentionally does not contain a fake/untrained model artifact.
 
-## Running and testing
+## Smoke test
 
-- Use a physical Android device with USB debugging enabled for best results.
-- If using an emulator, enable sensors and verify gyroscope support; behavior can differ from real hardware.
-
-## Formatting and linters
-
-- Kotlin: `ktlint` (project may configure ktlint via Gradle)
-- Java: `google-java-format` or Gradle `spotless` (if configured)
-
-To run formatters via Gradle (if configured):
+Run from `Pano_AI/` after real data is available:
 
 ```bash
-./gradlew ktlintFormat spotlessApply
+python tests/test_smoke.py --config config.yaml --samples 3
 ```
 
-If Gradle cannot download required formatting tools, check network/SSL settings or run formatters locally in Android Studio.
-
-## Common troubleshooting
-
-- "zip END header not found" / Gradle download errors: ensure `gradle/wrapper/gradle-wrapper.properties` uses `https://` (this repo was updated to HTTPS) and the build environment can access `services.gradle.org`.
-- SSL / certificate errors in container: install CA certificates in the base image (e.g., `ca-certificates` package) or configure proxy/CA trust.
-- "elmName / root is null" or XML parsing errors: inspect layout XML files under `app/src/main/res/layout` for malformed XML or null bytes. Open files with a binary-capable editor to detect embedded NULs.
-
----
-
-If you'd like, I can add:
-
-- a small CI job to run formatters and build the APK
-- pre-download Gradle into the Docker image to avoid network errors
-- run the formatters now (requires network access for Gradle dependencies)
-
-Tell me which option you prefer and I'll implement it.
+It performs a real forward/backward pass on 2–3 scene sets and asserts `[B,3,256,512]` output and finite gradients.
