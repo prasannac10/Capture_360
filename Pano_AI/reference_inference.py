@@ -1,18 +1,12 @@
-"""Authoritative end-to-end Python reference inference for Capture360."""
-
+"""Authoritative Capture360 inference: model/OpenCV stitching + high-res correction."""
 from __future__ import annotations
-
-import argparse
-import json
-import random
+import argparse, json, random
 from pathlib import Path
 from typing import Any, Dict, Optional
-
 import numpy as np
 import torch
 import yaml
 from PIL import Image
-
 from data.collate import panorama_collate_fn
 from data.dataset import PanoramaDataset
 from models.aggregator import SetAggregator
@@ -20,167 +14,52 @@ from models.decoder import PanoramaDecoder
 from models.encoder import ImageEncoder
 from models.panorama_model import PanoramaModel
 from pipeline import CorrectionPipeline
+from stitching.opencv_stitcher import stitch_fisheye_files, stitch_pinhole_files
 from utils.checkpoint import load_checkpoint
 from utils.ema import EMA
+from utils.high_resolution import OUTPUT_SIZE, resize_panorama, save_png_tiff
 
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+IMAGE_EXTENSIONS={'.png','.jpg','.jpeg','.webp','.tif','.tiff'}
 
+def set_deterministic(seed=0):
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark=False; torch.backends.cudnn.deterministic=True; torch.use_deterministic_algorithms(True,warn_only=True)
 
-def set_deterministic(seed: int = 0) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    torch.use_deterministic_algorithms(True, warn_only=True)
+def _load_cfg(path):
+    with open(path,encoding='utf-8') as f: return yaml.safe_load(f)
 
+def _resolve(base,value):
+    p=Path(value); return p if p.is_absolute() else base/p
 
-def _validate_session(session: Path) -> None:
-    if not session.is_dir():
-        raise FileNotFoundError(session)
-    images = sorted(p for p in (session / "images").glob("*") if p.suffix.lower() in IMAGE_EXTENSIONS)
-    if not images:
-        raise ValueError(f"No image frames found in {session / 'images'}")
-    if not (session / "poses.pt").exists():
-        raise FileNotFoundError(f"Missing poses.pt in {session}")
-    if not (session / "camera.json").exists():
-        raise FileNotFoundError(f"Missing camera.json in {session}; projection/calibration must be explicit")
+def _build_model(cfg,device):
+    m=cfg['model']; e=m.get('encoder',{}); return PanoramaModel(ImageEncoder(m['feature_dim'],e.get('backbone','resnet18'),bool(e.get('pretrained',True))),SetAggregator(m['feature_dim']),PanoramaDecoder(m['feature_dim']),m['pano_height'],m['pano_width']).to(device)
 
+def _save_metadata(out_dir,meta): (out_dir/'metadata.json').write_text(json.dumps(meta,indent=2),encoding='utf-8')
 
-def _load_cfg(path: Path) -> Dict[str, Any]:
-    with path.open(encoding="utf-8") as handle:
-        cfg = yaml.safe_load(handle)
-    if not isinstance(cfg, dict):
-        raise ValueError(f"Invalid configuration: {path}")
-    return cfg
-
-
-def _build_model(cfg: Dict[str, Any], device: torch.device) -> PanoramaModel:
-    m = cfg["model"]
-    e = m.get("encoder", {})
-    model = PanoramaModel(
-        ImageEncoder(m["feature_dim"], e.get("backbone", "resnet18"), bool(e.get("pretrained", True))),
-        SetAggregator(m["feature_dim"]),
-        PanoramaDecoder(m["feature_dim"]),
-        m["pano_height"], m["pano_width"],
-    ).to(device)
-    model.eval()
-    return model
-
-
-def _save_panorama(tensor: torch.Tensor, output_stem: Path) -> None:
-    image = tensor.detach().clamp(0, 1)
-    if image.ndim == 4:
-        image = image[0]
-    array = image.permute(1, 2, 0).cpu().numpy()
-    Image.fromarray((array * 255).round().astype(np.uint8)).save(output_stem.with_suffix(".png"))
-    Image.fromarray((array * 65535).round().astype(np.uint16)).save(output_stem.with_suffix(".tiff"), compression="tiff_deflate")
-
-
-def _load_mask(session: Path) -> Optional[np.ndarray]:
-    path = session / "correction_mask.png"
-    if not path.exists():
-        return None
-    return np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
-
-
-def run_reference_inference(
-    session: str | Path,
-    config_path: str | Path,
-    output_dir: str | Path,
-    device: Optional[str] = None,
-    seed: int = 0,
-    apply_corrections: bool = True,
-) -> Dict[str, Any]:
-    session, config_path, output_dir = Path(session), Path(config_path), Path(output_dir)
-    _validate_session(session)
-    cfg = _load_cfg(config_path)
-    set_deterministic(seed)
-    selected_device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-
-    dataset = PanoramaDataset(session.parent, has_gt=False)
-    matches = [i for i, scene in enumerate(dataset.scenes) if scene.resolve() == session.resolve()]
-    if not matches:
-        raise ValueError(f"Session is not a dataset scene: {session}")
-    batch = panorama_collate_fn([dataset[matches[0]]])
-
-    model = _build_model(cfg, selected_device)
-    checkpoint = cfg.get("inference", {}).get("checkpoint")
-    if not checkpoint:
-        raise ValueError("inference.checkpoint must be configured")
-    checkpoint_path = Path(checkpoint)
-    if not checkpoint_path.is_absolute():
-        checkpoint_path = config_path.parent / checkpoint_path
-    ema = EMA(model, cfg["training"]["ema_decay"]) if cfg["training"].get("use_ema", False) else None
-    load_checkpoint(str(checkpoint_path), model, device=selected_device, ema=ema, use_ema=ema is not None)
-    model.eval()
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with torch.inference_mode():
-        initial = model(
-            batch["images"].to(selected_device),
-            batch["rotations"].to(selected_device),
-            batch["mask"].to(selected_device),
-            batch["camera_params"].to(selected_device),
-        ).clamp(0, 1)
-
-    _save_panorama(initial, output_dir / "initial_panorama")
-    final = initial
-    correction_meta: Dict[str, Any] = {"enabled": False, "stages": []}
-
+def run_reference_inference(session,config_path,output_dir,device=None,seed=0,apply_corrections=True):
+    session,config_path,output_dir=Path(session),Path(config_path),Path(output_dir); cfg=_load_cfg(config_path); set_deterministic(seed); dev=torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
+    dataset=PanoramaDataset(session.parent,has_gt=False,model_size=(cfg['input']['model_height'],cfg['input']['model_width']),pano_size=(cfg['model']['pano_height'],cfg['model']['pano_width'])); matches=[i for i,s in enumerate(dataset.scenes) if s.resolve()==session.resolve()]
+    if not matches: raise ValueError(f'Session is not a dataset scene: {session}')
+    batch=panorama_collate_fn([dataset[matches[0]]]); image_files=sorted(p for p in (session/'images').iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS); cp=batch['camera_params'][0,0]; projection='pinhole' if cp[4].item()>0.5 else 'fisheye_180'; output_size=(int(cfg['stitching'].get('output_width',OUTPUT_SIZE[0])),int(cfg['stitching'].get('output_height',OUTPUT_SIZE[1])))
+    method=str(cfg['stitching'].get('method','model')).lower(); out_dir=output_dir; out_dir.mkdir(parents=True,exist_ok=True)
+    if method=='opencv':
+        if projection=='fisheye_180': initial_np=stitch_fisheye_files(image_files,out_dir/'opencv_initial.tiff',output_size=output_size,fov_degrees=float(cfg['stitching']['opencv'].get('fisheye_fov_deg',180.0)))
+        else: initial_np=stitch_pinhole_files(image_files,output_size=output_size)
+    elif method=='model':
+        model=_build_model(cfg,dev); ck=_resolve(config_path.parent,cfg['inference']['checkpoint']); ema=EMA(model,cfg['training']['ema_decay']) if cfg['training'].get('use_ema',False) else None; load_checkpoint(str(ck),model,device=dev,ema=ema,use_ema=ema is not None); model.eval()
+        with torch.inference_mode(): initial_t=model(batch['images'].to(dev),batch['rotations'].to(dev),batch['mask'].to(dev),batch['camera_params'].to(dev)).clamp(0,1)
+        initial_np=(initial_t[0].permute(1,2,0).cpu().numpy()*255).round().astype(np.uint8); initial_np=resize_panorama(initial_np,output_size)
+    else: raise ValueError("stitching.method must be 'model' or 'opencv'")
+    save_png_tiff(initial_np,out_dir/'initial_panorama')
+    final_np=initial_np; correction_meta={'enabled':False,'stages':[]}
     if apply_corrections:
-        correction_cfg = cfg.get("correction", {})
-        advanced_cfg = cfg.get("advanced_corrections", {})
-        toggles = dict(correction_cfg.get("toggles", {}))
-        toggles.update(advanced_cfg.get("toggles", {}))
-        checkpoints = dict(correction_cfg.get("checkpoints", {}))
-        checkpoints.update(advanced_cfg.get("checkpoints", {}))
-        correction = CorrectionPipeline(
-            toggles=toggles,
-            checkpoints=checkpoints,
-            device=selected_device,
-            allow_untrained=bool(correction_cfg.get("allow_untrained", False)),
-        )
-        final_np = correction.run(
-            (initial[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype(np.uint8),
-            correction_mask=_load_mask(session),
-        )
-        final = torch.from_numpy(final_np).permute(2, 0, 1).float().div(255).unsqueeze(0)
-        correction_meta = {"enabled": True, "stages": [k for k, v in toggles.items() if v]}
+        c=cfg.get('correction',{}); a=cfg.get('advanced_corrections',{}); toggles={**c.get('toggles',{}),**a.get('toggles',{})}; checkpoints={k:str(_resolve(config_path.parent,v)) for k,v in {**c.get('checkpoints',{}),**a.get('checkpoints',{})}.items()}; hr=cfg.get('inference',{}).get('high_resolution',{}); correction=CorrectionPipeline(toggles,checkpoints,dev,bool(c.get('allow_untrained',False)),int(hr.get('tile_size',1024)),int(hr.get('tile_overlap',128))); mask_path=session/'correction_mask.png'; mask=np.asarray(Image.open(mask_path).convert('L'),dtype=np.float32)/255 if mask_path.exists() else None
+        if mask is not None and mask.shape[:2]!=final_np.shape[:2]: mask=np.asarray(Image.fromarray((mask*255).astype(np.uint8)).resize((final_np.shape[1],final_np.shape[0]),Image.Resampling.BILINEAR),dtype=np.float32)/255
+        final_np=correction.run(final_np,correction_mask=mask); correction_meta={'enabled':True,'stages':[k for k,v in toggles.items() if v]}
+    save_png_tiff(final_np,out_dir/'final_corrected_panorama')
+    meta={'schema_version':2,'scene':session.name,'stitching_method':method,'projection':projection,'num_frames':int(batch['mask'].sum()),'source_dimensions':[[int(dataset[matches[0]]['camera_profile']['image_width']),int(dataset[matches[0]]['camera_profile']['image_height'])]],'panorama_size':[int(final_np.shape[1]),int(final_np.shape[0])],'model_working_panorama':[int(cfg['model']['pano_width']),int(cfg['model']['pano_height'])],'corrections':correction_meta,'device':str(dev),'seed':seed,'deterministic':True,'outputs':['initial_panorama.png','initial_panorama.tiff','final_corrected_panorama.png','final_corrected_panorama.tiff','metadata.json']}; _save_metadata(out_dir,meta); return meta
 
-    _save_panorama(final, output_dir / "final_panorama")
-    projection = "pinhole" if bool(batch["camera_params"][0, 0, 4].item() > 0.5) else "fisheye_180"
-    metadata = {
-        "schema_version": 1,
-        "scene": session.name,
-        "num_frames": int(batch["mask"].sum().item()),
-        "projection": projection,
-        "camera_params": batch["camera_params"][0, 0].cpu().tolist(),
-        "panorama_size": [int(final.shape[-2]), int(final.shape[-1])],
-        "model_checkpoint": str(checkpoint_path),
-        "device": str(selected_device),
-        "seed": seed,
-        "deterministic": True,
-        "corrections": correction_meta,
-        "outputs": ["initial_panorama.png", "initial_panorama.tiff", "final_panorama.png", "final_panorama.tiff", "metadata.json"],
-    }
-    (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    return metadata
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Capture360 Python reference inference")
-    parser.add_argument("--session", required=True)
-    parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--no-corrections", action="store_true")
-    args = parser.parse_args()
-    run_reference_inference(args.session, args.config, args.output, args.device, args.seed, not args.no_corrections)
-
-
-if __name__ == "__main__":
-    main()
+def main():
+    p=argparse.ArgumentParser(); p.add_argument('--session',required=True); p.add_argument('--config',default='config.yaml'); p.add_argument('--output',required=True); p.add_argument('--device',choices=['cpu','cuda'],default=None); p.add_argument('--seed',type=int,default=0); p.add_argument('--no-corrections',action='store_true'); a=p.parse_args(); run_reference_inference(a.session,a.config,a.output,a.device,a.seed,not a.no_corrections)
+if __name__=='__main__': main()

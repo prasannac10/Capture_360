@@ -1,27 +1,131 @@
-# Pano_AI is an independent Python project. Run every command with Pano_AI/ as the working directory.
-# Imports intentionally use: from data..., from models..., from utils...
+# Capture360 high-resolution training and inference steps
 
-# 1. Install dependencies
+## 0. Environment
+```bash
+cd Pano_AI
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
+```
 
-# 2. Real dataset
-# data/train/scene_0001/images/*.png
-# data/train/scene_0001/poses.pt
-# data/train/scene_0001/panorama.png
-# data/val/... (same structure)
-# poses.pt is [N,3] yaw/pitch/roll degrees. panorama.png is the single final label.
+## 1. Dataset contract
+Each scene must contain:
+```text
+scene_x/
+  images/                 # original-resolution JPG/PNG/TIFF
+  poses.pt               # N x 3 yaw/pitch/roll in degrees
+  camera.json            # projection + calibration + image_width/image_height
+  panorama.png           # GT equirectangular panorama for supervised training
+  correction_mask.png    # optional Nadir/Zenith mask
+```
+Supported source profiles:
+- DSLR fisheye: 9504x6336, normally 4-8 frames.
+- Drone still: 4096x3072, normally pinhole/perspective.
+- Mobile still: 3000x4000 through 6120x8160, normally 20-30 frames.
+- Target output: 12000x6000 equirectangular.
 
-# 3. Train
+Do not downsample the source files on disk. The dataset loader creates model-size views while retaining the original dimensions in camera metadata.
+
+## 2. Panorama model training
+The model is trained at the configured memory-safe working panorama (`model.pano_width` x `model.pano_height`, default 1500x750). This is intentional: the 12K output is produced during inference/export and correction is performed with overlapping tiles.
+
+```bash
 python train.py --config config.yaml
-
-# 4. Evaluate
+```
+Validate checkpoints with:
+```bash
 python eval.py --config config.yaml
+```
+Expected checkpoint:
+```text
+checkpoints/panorama_best.pt
+```
 
-# 5. Inference
-python inference.py --config config.yaml
+Train/validation/test splits must be scene/session based (80/10/10), stratified by camera type and frame count. Validate fisheye 4-6, fisheye 7-8, phone 20-24 and phone 25-30 separately.
 
-# 6. Export trained model for Android
-python export.py --config config.yaml --checkpoint checkpoints/simple_360.pt --output artifacts/pano_model.onnx
+## 3. Correction model training
+Train each correction model independently on high-resolution crops/tiles extracted from 12Kx6K or equivalent panoramas. Recommended training crop is 1024x1024 with 128-pixel overlap; keep validation scenes disjoint from training scenes.
 
-# Copy artifacts/pano_model.onnx to app/src/main/assets/pano_model.onnx only after a trained checkpoint exists.
-# Android uses ONNX Runtime with fixed [1,6,3,224,224] RGB inputs and [1,6,3,3] camera-to-world rotations.
+Required model checkpoints:
+```text
+checkpoints/glare_best.pt
+checkpoints/nadir_zenith_best.pt
+checkpoints/color_best.pt
+checkpoints/parallax_best.pt
+checkpoints/ghost_removal_best.pt
+checkpoints/seam_blending_best.pt
+checkpoints/overlap_detection_best.pt
+checkpoints/parallax_flow_best.pt
+```
+
+For each model:
+1. Generate/prepare corrupted input and clean target pairs.
+2. Generate masks/flow/overlap/seam labels required by the model.
+3. Split by capture scene, not by crop.
+4. Train at tile resolution; use augmentation for exposure, blur, noise and viewpoint variation.
+5. Validate per camera profile and artifact class.
+6. Save the best checkpoint only after independent validation.
+7. Enable the model in `config.yaml` only after validation.
+
+## 4. Configure stitching path
+In `config.yaml`:
+```yaml
+stitching:
+  method: model       # model | opencv
+```
+Use `model` for Pano_AI stitching. Use `opencv` for the classical reference baseline. The same correction pipeline can run after either path.
+
+## 5. Configure high-resolution inference
+```yaml
+stitching:
+  output_width: 12000
+  output_height: 6000
+inference:
+  high_resolution:
+    enabled: true
+    tile_size: 1024
+    tile_overlap: 128
+```
+Reduce tile size to 768 or 512 if GPU memory is constrained. Increase overlap only when a correction model needs more context at tile boundaries.
+
+## 6. End-to-end inference
+```bash
+python reference_inference.py \
+  --session data/val/scene_0001 \
+  --config config.yaml \
+  --output outputs/scene_0001
+```
+The pipeline is:
+```text
+original capture images
+    -> camera/pose validation
+    -> model stitching OR OpenCV stitching
+    -> 12000x6000 initial panorama
+    -> tiled correction models
+    -> classical finishing
+    -> final_corrected_panorama.png/.tiff
+```
+The output directory also contains `metadata.json`, which records stitching method, projection, source size, model working size, final size and enabled correction stages.
+
+## 7. Classical vs AI comparison
+Run the same session twice by changing only `stitching.method`:
+```yaml
+stitching:
+  method: opencv
+```
+and:
+```yaml
+stitching:
+  method: model
+```
+Keep correction toggles identical for a fair comparison. Compare seam quality, exposure consistency, ghosting, parallax, poles/nadir/zenith, PSNR/SSIM/LPIPS where GT exists, runtime and peak memory.
+
+## 8. Production checklist
+- Confirm all source images match `camera.json` dimensions.
+- Confirm calibration and projection are explicit.
+- Confirm panorama is exactly 12000x6000.
+- Confirm every enabled learned correction has a checkpoint.
+- Run malformed-input validation.
+- Run deterministic inference on a fixed benchmark set.
+- Archive initial + final panorama and metadata for traceability.
