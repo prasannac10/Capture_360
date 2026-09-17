@@ -1,0 +1,81 @@
+# High-resolution tiled model workflow
+
+## 1. Dataset contract
+
+Each scene must contain:
+
+```text
+scene_xxxxxx/
+  images/                  # native-resolution JPG/PNG/TIFF frames
+  poses.pt                 # [N,3] yaw/pitch/roll degrees
+  camera.json              # projection, dimensions and intrinsics/FOV
+  panorama.png             # training ground truth
+```
+
+Supported source profiles:
+- DSLR fisheye 9504x6336
+- Drone still 4096x3072
+- Mobile 3000x4000 to 6120x8160
+
+## 2. Tiling
+
+Use 1024x1024 tiles with 128-pixel overlap. Tiles are padded only at image edges. Original pixel coordinates are retained as metadata.
+
+## 3. Train
+
+From `Pano_AI`:
+
+```bash
+python train_tiled.py --config config.yaml
+```
+
+Training is batch size 1 because each scene can contain a different number of frames and tiles. Use mixed precision on CUDA. The training target defaults to 3000x1500 to control memory; the same model is configured for a 12000x6000 production decode at inference.
+
+## 4. Inference
+
+```bash
+python tiled_inference.py --scene ../data/test/scene_000001 --config config.yaml
+```
+
+Outputs:
+
+```text
+initial_panorama.png
+initial_panorama.tiff
+final_corrected_panorama.png
+final_corrected_panorama.tiff
+metadata.json
+```
+
+## 5. Model path
+
+```text
+native frames
+ -> overlapping tiles
+ -> shared stride-8 encoder
+ -> tile/camera/pose metadata fusion
+ -> arbitrary-N attention
+ -> spherical projection
+ -> multi-scale panorama decoder
+ -> 12K x 6K
+```
+
+## 6. Correction path
+
+Single-image learned correction models are applied with the same memory-bounded tiling strategy. Enable advanced pairwise models only when their auxiliary-data contracts and trained checkpoints are available.
+
+## 7. Classical comparison
+
+Keep `stitching.method: opencv` available in the reference pipeline for benchmark comparisons. The learned path is selected with `stitching.method: model`.
+
+## 8. Validation gates
+
+Before production:
+
+- Verify every source image matches `camera.json` dimensions.
+- Verify frame/pose count.
+- Verify fisheye calibration independently from UI mode.
+- Run 4/6/8 fisheye and 20/24/30 phone buckets.
+- Compare learned vs OpenCV output on fixed scenes.
+- Measure seam error, exposure consistency, moving-object artifacts, latency and peak GPU/CPU memory.
+- Train and independently validate each correction model before enabling it.

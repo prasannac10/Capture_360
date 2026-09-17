@@ -1,108 +1,77 @@
+# Capture360 variable-resolution / original-resolution tiled panorama configuration
 model:
-  feature_dim: 128
-  pano_height: 256
-  pano_width: 512
+  feature_dim: 64
+  tile_size: 1024
+  tile_overlap: 128
+  pano_feature_height: 750
+  pano_feature_width: 1500
+  output_height: 6000
+  output_width: 12000
+  train_output_height: 1500
+  train_output_width: 3000
   encoder:
     backbone: resnet18
     pretrained: true
-
-input:
-  min_frames: 4
-  max_frames: 30
-  recommended_fisheye_frames: [4, 8]
-  recommended_pinhole_frames: [20, 30]
-  height: 224
-  width: 224
-  normalization_mean: [0.0, 0.0, 0.0]
-  normalization_std: [1.0, 1.0, 1.0]
-  supported_projections: [fisheye_180, pinhole]
-
+    feature_stride: 8
+  attention:
+    heads: 8
+    layers: 2
 training:
   mode: supervised
   batch_size: 1
+  tile_batch_size: 4
+  decoder_output_tile: 1024
   lr: 5.0e-5
   weight_decay: 1.0e-4
   epochs: 10
   use_ema: true
   ema_decay: 0.999
-  training_data: "data/train"
-  val_data: "data/val"
-  model_path: "checkpoints"
-  best_model_name: "panorama_best.pt"
-  model_name: "panorama_last.pt"
-
+  training_data: data/train
+  val_data: data/val
+  model_path: checkpoints
+  best_model_name: panorama_tiled_best.pt
+  model_name: panorama_tiled_last.pt
+  mixed_precision: true
+  max_tiles_per_frame: null
+input:
+  min_frames: 4
+  max_frames: 30
+  recommended_fisheye_frames: [4,8]
+  recommended_pinhole_frames: [20,30]
+  supported_projections: [fisheye_180,pinhole]
+  dslr_fisheye: {width: 9504,height: 6336}
+  drone_still: {width: 4096,height: 3072}
+  mobile_min: {width: 3000,height: 4000}
+  mobile_max: {width: 6120,height: 8160}
+  preserve_original_resolution: true
 loss:
-  geometry:
-    smoothness_weight: 1.0
-  supervised:
-    l1_weight: 1.0
-    ssim_weight: 0.0
-
-# ORIGINAL CORRECTION STAGES
+  supervised: {l1_weight: 1.0,ssim_weight: 0.2,perceptual_weight: 0.1}
+  geometry: {smoothness_weight: 1.0}
+stitching: {method: model,output_width: 12000,output_height: 6000}
 correction:
   allow_untrained: false
-  checkpoints:
-    glare: "checkpoints/glare_best.pt"
-    nadir_zenith: "checkpoints/nadir_zenith_best.pt"
-    color: "checkpoints/color_best.pt"
-  toggles:
-    glare: true
-    dots: true
-    nadir_zenith: true
-    color: true
-    sharpen: true
-
-# NEW ADVANCED CORRECTION STAGES (disabled by default, enable after training)
-advanced_corrections:
-  allow_untrained: false
-  checkpoints:
-    parallax: "checkpoints/parallax_best.pt"
-    ghost_removal: "checkpoints/ghost_removal_best.pt"
-    seam_blending: "checkpoints/seam_blending_best.pt"
-    overlap_detection: "checkpoints/overlap_detection_best.pt"
-    parallax_flow: "checkpoints/parallax_flow_best.pt"
-  toggles:
-    # Parallax correction: handles depth-based distortions
-    parallax: false
-    # Ghost removal: removes artifacts from moving objects/exposure inconsistencies
-    ghost_removal: false
-    # Seam blending: learns optimal blending at image boundaries
-    seam_blending: false
-    # Overlap detection: validates and characterizes overlap regions
-    overlap_detection: false
-    # Parallax flow: computes directional flow field for parallax analysis
-    parallax_flow: false
-
+  checkpoints: {glare: checkpoints/glare_best.pt,nadir_zenith: checkpoints/nadir_zenith_best.pt,color: checkpoints/color_best.pt}
+  toggles: {glare: false,dots: true,nadir_zenith: false,color: false,sharpen: true}
 inference:
-  checkpoint: "checkpoints/panorama_best.pt"
+  checkpoint: checkpoints/panorama_tiled_best.pt
+  output_dir: outputs/panoramas
   save_outputs: true
   save_intermediate: true
   save_metadata: true
-  output_dir: "outputs/panoramas"
   save_format: tiff
-
-# CLASSICAL (OpenCV) CORRECTION OPTIONS
-# Set use_classical_* to true to use OpenCV methods instead of learned models
+  tile_batch_size: 4
+  output_tile: 1024
+advanced_corrections:
+  allow_untrained: false
+  checkpoints: {parallax: checkpoints/parallax_best.pt,ghost_removal: checkpoints/ghost_removal_best.pt,seam_blending: checkpoints/seam_blending_best.pt,overlap_detection: checkpoints/overlap_detection_best.pt,parallax_flow: checkpoints/parallax_flow_best.pt}
+  toggles: {parallax: false,ghost_removal: false,seam_blending: false,overlap_detection: false,parallax_flow: false}
 classical_methods:
-  use_classical_overlap_detection: false  # OverlapDetectorCV
-  use_classical_parallax_correction: false  # ParallaxCorrectionCV
-  use_classical_seam_blending: false  # SeamBlendingCV (multiband, feather, graph_cut)
-  use_classical_ghost_removal: false  # GhostRemovalCV
-
-# Classical method parameters
+  use_classical_overlap_detection: false
+  use_classical_parallax_correction: false
+  use_classical_seam_blending: false
+  use_classical_ghost_removal: false
 classical_parameters:
-  overlap_detection:
-    feature_detector: "orb"  # "orb", "sift", or "akaze"
-    min_matches: 4
-  
-  parallax_correction:
-    depth_estimation_method: "stereo_sgbm"
-    interpolation_method: "gaussian_blur"
-  
-  seam_blending:
-    blend_type: "multiband"  # "multiband", "feather", or "graph_cut"
-    seam_sigma: 15.0
-  
-  ghost_removal:
-    threshold_ratio: 0.3
-    inpainting_method: "poisson"  # "poisson" or "median_filter"
+  overlap_detection: {feature_detector: orb,min_matches: 4}
+  parallax_correction: {depth_estimation_method: stereo_sgbm,interpolation_method: gaussian_blur}
+  seam_blending: {blend_type: multiband,seam_sigma: 15.0}
+  ghost_removal: {threshold_ratio: 0.3,inpainting_method: poisson}
