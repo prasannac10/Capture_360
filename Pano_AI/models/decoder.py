@@ -1,43 +1,25 @@
-"""Spatial panorama reconstruction/refinement decoder."""
-
+"""Multi-scale panorama decoder producing the canonical 12K x 6K output."""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, channels: int):
+    def __init__(self, channels):
         super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(channels, channels, 3, padding=1, bias=False),
-            nn.BatchNorm2d(channels),
-            nn.GELU(),
-            nn.Conv2d(channels, channels, 3, padding=1, bias=False),
-            nn.BatchNorm2d(channels),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.gelu(x + self.block(x))
+        self.net=nn.Sequential(nn.Conv2d(channels,channels,3,padding=1),nn.GELU(),nn.Conv2d(channels,channels,3,padding=1))
+    def forward(self,x): return F.gelu(x+self.net(x))
 
 
-class PanoramaDecoder(nn.Module):
-    """Decode projected spherical features into a full-resolution RGB panorama."""
+class MultiScalePanoramaDecoder(nn.Module):
+    def __init__(self, dim=64, output_channels=3, output_size=(6000,12000), refinement_blocks=3):
+        super().__init__(); self.output_size=output_size
+        hidden=max(32,dim)
+        self.in_proj=nn.Sequential(nn.Conv2d(dim,hidden,3,padding=1),nn.GELU())
+        self.refine=nn.Sequential(*[ResidualBlock(hidden) for _ in range(refinement_blocks)])
+        self.detail=nn.Sequential(nn.Conv2d(hidden,hidden,3,padding=1),nn.GELU(),nn.Conv2d(hidden,output_channels,3,padding=1))
 
-    def __init__(self, dim: int, output_channels: int = 3):
-        super().__init__()
-        hidden = max(32, dim // 2)
-        self.in_proj = nn.Sequential(
-            nn.Conv2d(dim, hidden, 3, padding=1, bias=False),
-            nn.BatchNorm2d(hidden),
-            nn.GELU(),
-        )
-        self.refine = nn.Sequential(ResidualBlock(hidden), ResidualBlock(hidden))
-        self.out = nn.Sequential(
-            nn.Conv2d(hidden, hidden // 2, 3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden // 2, output_channels, 3, padding=1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.out(self.refine(self.in_proj(x)))
+    def forward(self,x):
+        x=self.refine(self.in_proj(x))
+        x=F.interpolate(x,size=self.output_size,mode='bilinear',align_corners=False)
+        return torch.sigmoid(self.detail(x))
