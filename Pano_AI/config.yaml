@@ -1,21 +1,28 @@
 model:
   feature_dim: 128
-  pano_height: 256
-  pano_width: 512
+  pano_height: 750
+  pano_width: 1500
   encoder:
     backbone: resnet18
     pretrained: true
+  # The network works at a memory-safe working resolution; inference/export is upscaled to 12Kx6K.
+  output_width: 12000
+  output_height: 6000
 
 input:
   min_frames: 4
   max_frames: 30
   recommended_fisheye_frames: [4, 8]
   recommended_pinhole_frames: [20, 30]
-  height: 224
-  width: 224
+  model_height: 224
+  model_width: 224
   normalization_mean: [0.0, 0.0, 0.0]
   normalization_std: [1.0, 1.0, 1.0]
   supported_projections: [fisheye_180, pinhole]
+  capture_profiles:
+    dslr_fisheye: {width: 9504, height: 6336}
+    drone_still: {width: 4096, height: 3072}
+    mobile_still: {min_width: 3000, min_height: 4000, max_width: 6120, max_height: 8160}
 
 training:
   mode: supervised
@@ -32,27 +39,17 @@ training:
   model_name: "panorama_last.pt"
 
 loss:
-  geometry:
-    smoothness_weight: 1.0
-  supervised:
-    l1_weight: 1.0
-    ssim_weight: 0.0
+  geometry: {smoothness_weight: 1.0}
+  supervised: {l1_weight: 1.0, ssim_weight: 0.0}
 
-# ORIGINAL CORRECTION STAGES
 correction:
   allow_untrained: false
   checkpoints:
     glare: "checkpoints/glare_best.pt"
     nadir_zenith: "checkpoints/nadir_zenith_best.pt"
     color: "checkpoints/color_best.pt"
-  toggles:
-    glare: true
-    dots: true
-    nadir_zenith: true
-    color: true
-    sharpen: true
+  toggles: {glare: true, dots: true, nadir_zenith: true, color: true, sharpen: true}
 
-# NEW ADVANCED CORRECTION STAGES (disabled by default, enable after training)
 advanced_corrections:
   allow_untrained: false
   checkpoints:
@@ -61,17 +58,16 @@ advanced_corrections:
     seam_blending: "checkpoints/seam_blending_best.pt"
     overlap_detection: "checkpoints/overlap_detection_best.pt"
     parallax_flow: "checkpoints/parallax_flow_best.pt"
-  toggles:
-    # Parallax correction: handles depth-based distortions
-    parallax: false
-    # Ghost removal: removes artifacts from moving objects/exposure inconsistencies
-    ghost_removal: false
-    # Seam blending: learns optimal blending at image boundaries
-    seam_blending: false
-    # Overlap detection: validates and characterizes overlap regions
-    overlap_detection: false
-    # Parallax flow: computes directional flow field for parallax analysis
-    parallax_flow: false
+  toggles: {parallax: false, ghost_removal: false, seam_blending: false, overlap_detection: false, parallax_flow: false}
+
+# Top-level stitching switch. Use opencv for classical baseline, model for Pano_AI.
+stitching:
+  method: model                 # model | opencv
+  output_width: 12000
+  output_height: 6000
+  opencv:
+    fisheye_fov_deg: 180.0
+    pinhole_fallback: true
 
 inference:
   checkpoint: "checkpoints/panorama_best.pt"
@@ -80,29 +76,22 @@ inference:
   save_metadata: true
   output_dir: "outputs/panoramas"
   save_format: tiff
+  high_resolution:
+    enabled: true
+    tile_size: 1024
+    tile_overlap: 128
+    working_panorama_width: 1500
+    working_panorama_height: 750
 
-# CLASSICAL (OpenCV) CORRECTION OPTIONS
-# Set use_classical_* to true to use OpenCV methods instead of learned models
+# Each advanced correction can independently select classical OpenCV or learned AI.
 classical_methods:
-  use_classical_overlap_detection: false  # OverlapDetectorCV
-  use_classical_parallax_correction: false  # ParallaxCorrectionCV
-  use_classical_seam_blending: false  # SeamBlendingCV (multiband, feather, graph_cut)
-  use_classical_ghost_removal: false  # GhostRemovalCV
+  use_classical_overlap_detection: false
+  use_classical_parallax_correction: false
+  use_classical_seam_blending: false
+  use_classical_ghost_removal: false
 
-# Classical method parameters
 classical_parameters:
-  overlap_detection:
-    feature_detector: "orb"  # "orb", "sift", or "akaze"
-    min_matches: 4
-  
-  parallax_correction:
-    depth_estimation_method: "stereo_sgbm"
-    interpolation_method: "gaussian_blur"
-  
-  seam_blending:
-    blend_type: "multiband"  # "multiband", "feather", or "graph_cut"
-    seam_sigma: 15.0
-  
-  ghost_removal:
-    threshold_ratio: 0.3
-    inpainting_method: "poisson"  # "poisson" or "median_filter"
+  overlap_detection: {feature_detector: "orb", min_matches: 4}
+  parallax_correction: {depth_estimation_method: "stereo_sgbm", interpolation_method: "gaussian_blur"}
+  seam_blending: {blend_type: "multiband", seam_sigma: 15.0}
+  ghost_removal: {threshold_ratio: 0.3, inpainting_method: "poisson"}
