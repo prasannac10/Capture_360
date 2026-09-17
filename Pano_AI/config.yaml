@@ -16,105 +16,62 @@ model:
   attention:
     heads: 8
     layers: 2
-
-input:
-  min_frames: 4
-  max_frames: 30
-  recommended_fisheye_frames: [4, 8]
-  recommended_pinhole_frames: [20, 30]
-  supported_projections: [fisheye_180, pinhole]
-  dslr_fisheye: {width: 9504, height: 6336}
-  drone_still: {width: 4096, height: 3072}
-  mobile_min: {width: 3000, height: 4000}
-  mobile_max: {width: 6120, height: 8160}
-  preserve_original_resolution: true
-
 training:
   mode: supervised
   batch_size: 1
+  tile_batch_size: 4
+  decoder_output_tile: 1024
   lr: 5.0e-5
   weight_decay: 1.0e-4
   epochs: 10
   use_ema: true
   ema_decay: 0.999
-  training_data: "data/train"
-  val_data: "data/val"
-  model_path: "checkpoints"
-  best_model_name: "panorama_tiled_best.pt"
-  model_name: "panorama_tiled_last.pt"
-  gradient_accumulation_steps: 1
+  training_data: data/train
+  val_data: data/val
+  model_path: checkpoints
+  best_model_name: panorama_tiled_best.pt
+  model_name: panorama_tiled_last.pt
   mixed_precision: true
   max_tiles_per_frame: null
-
+input:
+  min_frames: 4
+  max_frames: 30
+  recommended_fisheye_frames: [4,8]
+  recommended_pinhole_frames: [20,30]
+  supported_projections: [fisheye_180,pinhole]
+  dslr_fisheye: {width: 9504,height: 6336}
+  drone_still: {width: 4096,height: 3072}
+  mobile_min: {width: 3000,height: 4000}
+  mobile_max: {width: 6120,height: 8160}
+  preserve_original_resolution: true
 loss:
-  supervised:
-    l1_weight: 1.0
-    ssim_weight: 0.2
-    perceptual_weight: 0.1
-  geometry:
-    smoothness_weight: 1.0
-  overlap_weight: 0.1
-  seam_weight: 0.1
-
-stitching:
-  method: model  # model | opencv
-  output_width: 12000
-  output_height: 6000
-
+  supervised: {l1_weight: 1.0,ssim_weight: 0.2,perceptual_weight: 0.1}
+  geometry: {smoothness_weight: 1.0}
+stitching: {method: model,output_width: 12000,output_height: 6000}
 correction:
   allow_untrained: false
-  checkpoints:
-    glare: "checkpoints/glare_best.pt"
-    nadir_zenith: "checkpoints/nadir_zenith_best.pt"
-    color: "checkpoints/color_best.pt"
-  toggles:
-    glare: true
-    dots: true
-    nadir_zenith: true
-    color: true
-    sharpen: true
-
-advanced_corrections:
-  allow_untrained: false
-  checkpoints:
-    parallax: "checkpoints/parallax_best.pt"
-    ghost_removal: "checkpoints/ghost_removal_best.pt"
-    seam_blending: "checkpoints/seam_blending_best.pt"
-    overlap_detection: "checkpoints/overlap_detection_best.pt"
-    parallax_flow: "checkpoints/parallax_flow_best.pt"
-  toggles:
-    parallax: false
-    ghost_removal: false
-    seam_blending: false
-    overlap_detection: false
-    parallax_flow: false
-
+  checkpoints: {glare: checkpoints/glare_best.pt,nadir_zenith: checkpoints/nadir_zenith_best.pt,color: checkpoints/color_best.pt}
+  toggles: {glare: false,dots: true,nadir_zenith: false,color: false,sharpen: true}
 inference:
-  checkpoint: "checkpoints/panorama_tiled_best.pt"
-  output_dir: "outputs/panoramas"
+  checkpoint: checkpoints/panorama_tiled_best.pt
+  output_dir: outputs/panoramas
   save_outputs: true
   save_intermediate: true
   save_metadata: true
   save_format: tiff
-  device: auto
   tile_batch_size: 4
-
+  output_tile: 1024
+advanced_corrections:
+  allow_untrained: false
+  checkpoints: {parallax: checkpoints/parallax_best.pt,ghost_removal: checkpoints/ghost_removal_best.pt,seam_blending: checkpoints/seam_blending_best.pt,overlap_detection: checkpoints/overlap_detection_best.pt,parallax_flow: checkpoints/parallax_flow_best.pt}
+  toggles: {parallax: false,ghost_removal: false,seam_blending: false,overlap_detection: false,parallax_flow: false}
 classical_methods:
   use_classical_overlap_detection: false
   use_classical_parallax_correction: false
   use_classical_seam_blending: false
   use_classical_ghost_removal: false
-
 classical_parameters:
-  overlap_detection:
-    feature_detector: orb
-    min_matches: 4
-  parallax_correction:
-    depth_estimation_method: stereo_sgbm
-    interpolation_method: gaussian_blur
-  seam_blending:
-    blend_type: multiband
-    seam_sigma: 15.0
-  ghost_removal:
-    threshold_ratio: 0.3
-    inpainting_method: poisson
+  overlap_detection: {feature_detector: orb,min_matches: 4}
+  parallax_correction: {depth_estimation_method: stereo_sgbm,interpolation_method: gaussian_blur}
+  seam_blending: {blend_type: multiband,seam_sigma: 15.0}
+  ghost_removal: {threshold_ratio: 0.3,inpainting_method: poisson}

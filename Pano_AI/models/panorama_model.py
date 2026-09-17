@@ -1,54 +1,27 @@
-"""Variable-resolution, original-resolution tiled panorama model."""
+"""Variable-resolution panorama model with re-iterable tile streaming."""
 import torch
 import torch.nn as nn
 from models.encoder import ImageEncoder
 from models.tile_metadata import TileMetadataEncoder
-from models.tile_aggregator import TileAttentionAggregator, SceneToken
-from models.tile_spherical import project_tile_features, ypr_to_rot
+from models.tile_aggregator import TileAttentionAggregator,SceneToken
+from models.tile_spherical import project_tile_features,ypr_to_rot
 from models.decoder import MultiScalePanoramaDecoder
-
-
 class PanoramaModel(nn.Module):
-    """Camera/pose-aware arbitrary-N panorama model.
-
-    Input: tiles [B,N,T,3,1024,1024], tile_mask [B,N,T], tile_xy/wh [B,N,T,2],
-    image_size [B,N,2], camera_params [B,N,6], poses [B,N,3] or rotations [B,N,3,3].
-    The model never resizes a complete source image to 224x224.
-    """
-    def __init__(self, feature_dim=64, pano_feature_size=(750,1500), output_size=(6000,12000),
-                 tile_size=1024, backbone="resnet18", pretrained=True, attention_heads=8):
-        super().__init__()
-        self.feature_dim=feature_dim; self.pano_feature_size=pano_feature_size; self.tile_size=tile_size
-        self.encoder=ImageEncoder(feature_dim, backbone, pretrained)
-        self.metadata=TileMetadataEncoder(feature_dim)
-        self.aggregator=TileAttentionAggregator(feature_dim, attention_heads)
-        self.scene_token=SceneToken(feature_dim)
-        self.condition=nn.Sequential(nn.Linear(feature_dim,feature_dim),nn.Sigmoid())
-        self.decoder=MultiScalePanoramaDecoder(feature_dim,3,output_size)
-
-    def forward(self, tiles, tile_mask, tile_xy, tile_wh, image_size, camera_params, poses=None, rotations=None):
-        if tiles.ndim != 6: raise ValueError(f"tiles must be [B,N,T,3,H,W], got {tuple(tiles.shape)}")
-        b,n,t,c,h,w=tiles.shape
-        if rotations is None:
-            if poses is None: raise ValueError("poses or rotations are required")
-            rotations=torch.stack([ypr_to_rot(p) for p in poses],0)
-        x=tiles.reshape(b*n*t,c,h,w)
-        valid=tile_mask.reshape(-1)
-        # Encode all padded slots in one shared network, then mask them from attention/projection.
-        feat=self.encoder(x).reshape(b,n,t,self.feature_dim,h//8,w//8)
-        xy_norm=tile_xy/torch.maximum(image_size.unsqueeze(2),torch.ones_like(image_size.unsqueeze(2)))
-        wh_norm=tile_wh/torch.maximum(image_size.unsqueeze(2),torch.ones_like(image_size.unsqueeze(2)))
-        im_norm=image_size.unsqueeze(2).expand(-1,-1,t,-1)
-        meta=self.metadata(xy_norm,wh_norm,im_norm,camera_params.unsqueeze(2).expand(-1,-1,t,-1),rotations.unsqueeze(2).expand(-1,-1,t,-1,-1))
-        tokens=feat.mean(dim=(-1,-2))+meta
-        tokens=tokens.reshape(b,n*t,self.feature_dim)
-        mask=tile_mask.reshape(b,n*t)
-        tokens=self.aggregator(tokens,mask)
-        scene=self.scene_token(tokens,mask)
-        # Per-tile attention output conditions the corresponding spatial feature map.
-        feat=feat.reshape(b,n*t,self.feature_dim,feat.shape[-2],feat.shape[-1])
-        feat=feat*torch.sigmoid(tokens).unsqueeze(-1).unsqueeze(-1)
-        feat=feat.reshape(b,n,t,self.feature_dim,feat.shape[-2],feat.shape[-1])
-        spherical=project_tile_features(feat,tile_xy,image_size,camera_params,rotations,*self.pano_feature_size)
-        spherical=spherical* self.condition(scene).unsqueeze(-1).unsqueeze(-1)
-        return self.decoder(spherical)
+    def __init__(self,feature_dim=64,pano_feature_size=(750,1500),output_size=(6000,12000),tile_size=1024,backbone='resnet18',pretrained=True,attention_heads=8,attention_layers=2,output_tile=1024):
+        super().__init__(); self.feature_dim=feature_dim; self.pano_feature_size=pano_feature_size
+        self.encoder=ImageEncoder(feature_dim,backbone,pretrained); self.metadata=TileMetadataEncoder(feature_dim); self.aggregator=TileAttentionAggregator(feature_dim,attention_heads,attention_layers); self.scene_token=SceneToken(feature_dim,attention_heads); self.condition=nn.Sequential(nn.Linear(feature_dim,feature_dim),nn.Sigmoid()); self.decoder=MultiScalePanoramaDecoder(feature_dim,3,output_size,output_tile=output_tile)
+    def _meta(self,xy,wh,size,cam,rot):
+        s=size.view(1,1,2).clamp_min(1); xy=xy.view(1,-1,2)/s; wh=wh.view(1,-1,2)/s; image=torch.ones_like(xy); c=cam.view(1,1,6).expand(1,xy.shape[1],6).clone(); c[...,:2]/=s; c[...,2:4]/=s; c[...,5]/=180.; r=rot.view(1,1,3,3).expand(1,xy.shape[1],3,3); return self.metadata(xy,wh,image,c,r)
+    def forward_scene(self,batch_factory,image_size,camera_params,poses,tile_batch_size=4):
+        """batch_factory() must yield (frame_index, tiles[K,3,H,W], xy[K,2], wh[K,2]). It is called twice."""
+        dev=next(self.parameters()).device; tokens=[]; count=0
+        for fi,tiles,xy,wh in batch_factory():
+            for st in range(0,tiles.shape[0],tile_batch_size):
+                x=tiles[st:st+tile_batch_size].to(dev); rot=ypr_to_rot(poses[fi:fi+1].to(dev)); feat=self.encoder(x); tokens.append(feat.mean((-1,-2))+self._meta(xy[st:st+tile_batch_size].to(dev),wh[st:st+tile_batch_size].to(dev),image_size[fi].to(dev),camera_params[fi].to(dev),rot)); count+=len(x)
+        if not tokens: raise ValueError('Scene contains no tiles')
+        ctx=self.aggregator(torch.cat(tokens,0).unsqueeze(0),torch.ones(1,count,device=dev,dtype=torch.bool)); scene=self.scene_token(ctx,torch.ones(1,count,device=dev,dtype=torch.bool)); gate=torch.sigmoid(ctx[0]); sph=torch.zeros(1,self.feature_dim,*self.pano_feature_size,device=dev); weight=torch.zeros(1,1,*self.pano_feature_size,device=dev); cursor=0
+        for fi,tiles,xy,wh in batch_factory():
+            rot=ypr_to_rot(poses[fi:fi+1].to(dev))
+            for st in range(0,tiles.shape[0],tile_batch_size):
+                en=min(st+tile_batch_size,tiles.shape[0]); x=tiles[st:en].to(dev); feat=self.encoder(x).unsqueeze(0); k=en-st; feat=feat*gate[cursor:cursor+k].view(1,1,k,self.feature_dim,1,1); ps,pw=project_tile_features(feat,xy[st:en].to(dev).view(1,1,k,2),wh[st:en].to(dev).view(1,1,k,2),image_size[fi].to(dev).view(1,1,2),camera_params[fi].to(dev).view(1,1,6),rot.view(1,1,3,3),*self.pano_feature_size,feature_stride=self.encoder.feature_stride); sph+=ps*pw; weight+=pw; cursor+=k
+        spherical=sph/weight.clamp_min(1e-6); spherical*=self.condition(scene).view(1,self.feature_dim,1,1); return self.decoder(spherical)
