@@ -1,33 +1,59 @@
-# Pano_AI
+# Pano_AI — variable-resolution panorama pipeline
 
-`Pano_AI/` is an independent Python ML project; the Android `app/` is only a consumer/export target.
+Pano_AI is the Python reference implementation for Capture360's native-resolution panorama generation.
 
-## Dual-camera design
+## Input contract
 
-The panorama model supports **variable N** views rather than assuming six frames:
-- fisheye camera: typically 4-8 views for 360 degrees
-- phone/perspective camera: typically 20-30 views
-- supported runtime range: 4-30 views
+Each training/inference scene contains:
 
-Every scene has `images/*.png` and `poses.pt`. For supervised training it also has `panorama.png`. An optional `camera.json` identifies the projection. Example phone metadata:
-
-```json
-{"projection":"pinhole","image_width":4000,"image_height":3000,"fx":2100,"fy":2100,"cx":2000,"cy":1500}
+```text
+scene_xxxxxx/
+  images/        # native JPG/PNG/TIFF frames
+  poses.pt       # [N,3] yaw/pitch/roll degrees
+  camera.json    # projection + calibrated intrinsics/FOV
+  panorama.png   # required for supervised training
 ```
 
-If `camera.json` is absent, the scene defaults to 180-degree equidistant fisheye. Phone scenes should provide calibrated OpenCV intrinsics; a guessed FOV is acceptable only for early experiments.
+Supported source ranges include DSLR fisheye 9504x6336, drone still 4096x3072, and mobile stills from 3000x4000 through 6120x8160. Valid frame count is 4–30; typical fisheye capture is 4–8 frames and pinhole capture is 20–30.
 
-## Model
+## Variable-resolution architecture
 
-`ImageEncoder -> SetAggregator -> differentiable Spherical Fusion -> PanoramaDecoder`.
-The set aggregator is permutation invariant and spherical fusion accepts arbitrary N. Projection metadata selects either 180-degree fisheye or pinhole geometry. The projection implementation is vectorized over N so ONNX can expose a dynamic `num_frames` axis.
+```text
+native frames
+ -> 1024x1024 overlapping tiles
+ -> shared ResNet18 stride-8 encoder
+ -> tile + camera + pose metadata
+ -> arbitrary-N tile attention
+ -> camera-aware spherical projection
+ -> memory-bounded 12K x 6K decoder
+ -> correction stages
+ -> final panorama
+```
+
+The complete source frame is never resized to 224x224. Tiles are loaded lazily and processed in configurable chunks. The model makes two encoder passes: the first builds the global tile-attention context; the second immediately projects spatial features into the panorama canvas. This trades extra encoder compute for bounded feature memory.
 
 ## Training
 
-Train the geometric/learned baseline with `python train.py --config config.yaml`. The loader pads different N values within a batch and supplies a frame mask and camera parameters. Keep fisheye and phone scenes in the same training set only after camera metadata is correct; stratified validation by camera type is recommended.
+From `Pano_AI`:
 
-## ONNX / Android
+```bash
+python train_tiled.py --config config.yaml
+```
 
-`export.py` exports dynamic N with inputs `images`, `rotations`, `frame_mask`, and `camera_params`. Android accepts 4-30 captured frames and passes the selected camera profile. The output is RGB `[1,3,256,512]` in `[0,1]`.
+Training uses the native-resolution tiled path, supervised ground truth, validation scenes when available, mixed precision on CUDA, gradient clipping and optional EMA. The default training target is 3000x1500; production inference is 12000x6000.
 
-The learned checkpoint and ONNX artifact are intentionally not committed until real training data is supplied.
+## Inference
+
+```bash
+python tiled_inference.py --scene ../data/test/scene_000001 --config config.yaml
+```
+
+Outputs include `initial_panorama.png`, `initial_panorama.tiff`, `final_corrected_panorama.png`, `final_corrected_panorama.tiff`, and `metadata.json`.
+
+Correction models are disabled by default until their trained checkpoints are present. Classical lens-dot removal and sharpening remain enabled. Enable a learned correction only after its checkpoint and validation are available.
+
+## Validation status
+
+The code path has been structurally updated for variable-resolution training and inference. Actual customer-dataset GPU execution, quality benchmarking, calibration validation and peak-memory measurements are still required before treating the model as production-ready.
+
+The legacy 224x224 ONNX export path is intentionally not advertised for this native tiled architecture; deployment export will be implemented after the Python reference contract is validated.
