@@ -11,7 +11,7 @@ class OverlapDetectorCV:
     def __init__(self, feature_detector: str = "orb", min_matches: int = 4):
         """
         Initialize overlap detector.
-        
+
         Args:
             feature_detector: "orb", "sift", or "akaze"
             min_matches: Minimum number of feature matches to consider overlap valid
@@ -42,10 +42,10 @@ class OverlapDetectorCV:
     ) -> Dict[Tuple[int, int], Dict]:
         """
         Detect overlaps between all image pairs.
-        
+
         Args:
             images: List of input images [H, W, C]
-            
+
         Returns:
             Dictionary mapping (i, j) -> {
                 'overlap_percentage': float,
@@ -83,13 +83,17 @@ class OverlapDetectorCV:
                         kp_i, kp_j, matches, images[i], images[j]
                     )
                     overlaps[(i, j)] = {
-                        'overlap_percentage': overlap_pct,
-                        'match_count': len(inliers),
-                        'homography': h,
-                        'keypoints_i': kp_i,
-                        'keypoints_j': kp_j,
-                        'matches': inliers,
-                        'confidence': len(inliers) / max(len(kp_i), len(kp_j)) if max(len(kp_i), len(kp_j)) > 0 else 0
+                        "overlap_percentage": overlap_pct,
+                        "match_count": len(inliers),
+                        "homography": h,
+                        "keypoints_i": kp_i,
+                        "keypoints_j": kp_j,
+                        "matches": inliers,
+                        "confidence": (
+                            len(inliers) / max(len(kp_i), len(kp_j))
+                            if max(len(kp_i), len(kp_j)) > 0
+                            else 0
+                        ),
                     }
 
         return overlaps
@@ -97,11 +101,11 @@ class OverlapDetectorCV:
     def _find_good_matches(self, desc1: np.ndarray, desc2: np.ndarray) -> List:
         """
         Find good matches using Lowe's ratio test.
-        
+
         Args:
             desc1: Descriptors from first image
             desc2: Descriptors from second image
-            
+
         Returns:
             List of good matches
         """
@@ -126,14 +130,14 @@ class OverlapDetectorCV:
     ) -> Tuple[np.ndarray, float, List]:
         """
         Compute homography matrix and estimate overlap percentage.
-        
+
         Args:
             kp1: Keypoints from image 1
             kp2: Keypoints from image 2
             matches: Matched features
             img1: First image
             img2: Second image
-            
+
         Returns:
             (homography_matrix, overlap_percentage, inlier_matches)
         """
@@ -160,12 +164,7 @@ class OverlapDetectorCV:
         warped_corners = cv2.perspectiveTransform(corners, h)
 
         # Calculate intersection area
-        pts_overlap = np.array([
-            [0, 0],
-            [w2, 0],
-            [w2, h2],
-            [0, h2]
-        ], dtype=np.float32)
+        pts_overlap = np.array([[0, 0], [w2, 0], [w2, h2], [0, h2]], dtype=np.float32)
 
         # Use contour intersection
         overlap_pct = self._estimate_overlap_percentage(
@@ -185,13 +184,13 @@ class OverlapDetectorCV:
     ) -> float:
         """
         Estimate percentage overlap between two images.
-        
+
         Args:
             warped_corners: Corners of img1 warped to img2 space
             img2_corners: Corners of img2
             h1, w1: Height and width of img1
             h2, w2: Height and width of img2
-            
+
         Returns:
             Overlap percentage (0-100)
         """
@@ -220,12 +219,12 @@ class OverlapDetectorCV:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Extract the overlap region between two images.
-        
+
         Args:
             img1: First image
             img2: Second image
             h: Homography matrix from img1 to img2
-            
+
         Returns:
             (overlap_region_img1, overlap_region_img2)
         """
@@ -236,42 +235,52 @@ class OverlapDetectorCV:
         warped = cv2.warpPerspective(img1, h, (w2, h2))
 
         # Create overlap mask
-        gray1 = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY) if len(warped.shape) == 3 else warped
+        gray1 = (
+            cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+            if len(warped.shape) == 3
+            else warped
+        )
         gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY) if len(img2.shape) == 3 else img2
 
         overlap_mask = (gray1 > 0) & (gray2 > 0)
 
         return warped, overlap_mask
 
-    def compute_overlap_statistics(
-        self, overlaps: Dict[Tuple[int, int], Dict]
-    ) -> Dict:
+    def compute_overlap_statistics(self, overlaps: Dict[Tuple[int, int], Dict]) -> Dict:
         """
         Compute statistics from overlap detection results.
-        
+
         Args:
             overlaps: Dictionary from detect_pairwise_overlaps
-            
+
         Returns:
             Dictionary with statistics
         """
         if not overlaps:
             return {
-                'total_pairs': 0,
-                'overlapping_pairs': 0,
-                'mean_overlap': 0.0,
-                'mean_confidence': 0.0
+                "total_pairs": 0,
+                "overlapping_pairs": 0,
+                "mean_overlap": 0.0,
+                "mean_confidence": 0.0,
             }
 
-        overlap_percentages = [v['overlap_percentage'] for v in overlaps.values()]
-        confidences = [v['confidence'] for v in overlaps.values()]
+        overlap_percentages = [v["overlap_percentage"] for v in overlaps.values()]
+        confidences = [v["confidence"] for v in overlaps.values()]
 
         return {
-            'total_pairs': len(overlaps),
-            'overlapping_pairs': len([o for o in overlap_percentages if o > 5.0]),
-            'mean_overlap': float(np.mean(overlap_percentages)) if overlap_percentages else 0.0,
-            'std_overlap': float(np.std(overlap_percentages)) if overlap_percentages else 0.0,
-            'mean_confidence': float(np.mean(confidences)) if confidences else 0.0,
-            'min_overlap': float(np.min(overlap_percentages)) if overlap_percentages else 0.0,
-            'max_overlap': float(np.max(overlap_percentages)) if overlap_percentages else 0.0,
+            "total_pairs": len(overlaps),
+            "overlapping_pairs": len([o for o in overlap_percentages if o > 5.0]),
+            "mean_overlap": (
+                float(np.mean(overlap_percentages)) if overlap_percentages else 0.0
+            ),
+            "std_overlap": (
+                float(np.std(overlap_percentages)) if overlap_percentages else 0.0
+            ),
+            "mean_confidence": float(np.mean(confidences)) if confidences else 0.0,
+            "min_overlap": (
+                float(np.min(overlap_percentages)) if overlap_percentages else 0.0
+            ),
+            "max_overlap": (
+                float(np.max(overlap_percentages)) if overlap_percentages else 0.0
+            ),
         }

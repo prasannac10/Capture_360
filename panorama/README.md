@@ -14,6 +14,7 @@ the frame dimensions (or set `input.profile` explicitly):
 | Profile | Supported frames | Projection |
 | --- | --- | --- |
 | `dslr_fisheye` | 9504x6336, 4–8 images | 180-degree fisheye |
+| `mobile_landscape` | 1920x1080, 20–60 images | landscape phone/pinhole |
 | `drone_still` | 4096x3072, 20–30 images | pinhole/perspective |
 | `mobile` | portrait images at least 3000x4000, 20–30 images | pinhole/perspective |
 
@@ -67,7 +68,11 @@ python -m panorama.pano_ai.tiled_inference --scene data/test/scene_000001 --conf
 
 Outputs include `initial_panorama.png`, `initial_panorama.tiff`, `final_corrected_panorama.png`, `final_corrected_panorama.tiff`, and `metadata.json`.
 
-Correction models are disabled by default until their trained checkpoints are present. Classical lens-dot removal and sharpening remain enabled. Enable a learned correction only after its checkpoint and validation are available.
+Learned correction stages require their trained checkpoints. Baseline and single-image
+advanced corrections (parallax and ghost removal) run in the tiled AI correction
+pipeline. Pairwise AI stages (seam blending, overlap detection, and parallax flow)
+remain disabled until their panorama-aligned reference/mask data contract and tiled
+implementation are supplied. Classical lens-dot removal and sharpening remain enabled.
 
 ## Validation status
 

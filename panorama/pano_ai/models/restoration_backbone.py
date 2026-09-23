@@ -29,7 +29,13 @@ class RestorationUNet(nn.Module):
     mask alongside RGB data.
     """
 
-    def __init__(self, in_channels: int = 3, out_channels: int = 3, base_channels: int = 32, mask_channels: int = 0):
+    def __init__(
+        self,
+        in_channels: int = 3,
+        out_channels: int = 3,
+        base_channels: int = 32,
+        mask_channels: int = 0,
+    ):
         super().__init__()
         total_in = in_channels + mask_channels
         c1, c2, c3 = base_channels, base_channels * 2, base_channels * 4
@@ -45,9 +51,13 @@ class RestorationUNet(nn.Module):
 
     @staticmethod
     def _up(x: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
-        return F.interpolate(x, size=ref.shape[-2:], mode="bilinear", align_corners=False)
+        return F.interpolate(
+            x, size=ref.shape[-2:], mode="bilinear", align_corners=False
+        )
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         if mask is not None:
             if mask.ndim == 3:
                 mask = mask.unsqueeze(1)

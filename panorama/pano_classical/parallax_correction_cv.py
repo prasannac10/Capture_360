@@ -12,7 +12,7 @@ class ParallaxCorrectionCV:
     def __init__(self, depth_estimation_method: str = "stereo_sgbm"):
         """
         Initialize parallax corrector.
-        
+
         Args:
             depth_estimation_method: "stereo_sgbm" or "disparity_map"
         """
@@ -29,13 +29,13 @@ class ParallaxCorrectionCV:
     ) -> np.ndarray:
         """
         Estimate parallax shift vectors using matched features.
-        
+
         Args:
             img1, img2: Input images
             h: Homography matrix
             keypoints1, keypoints2: Feature keypoints
             matches: Matched features
-            
+
         Returns:
             Parallax shift map [H, W, 2]
         """
@@ -46,14 +46,20 @@ class ParallaxCorrectionCV:
             return parallax_map
 
         # Extract matched point pairs
-        src_pts = np.array([keypoints1[m.queryIdx].pt for m in matches], dtype=np.float32)
-        dst_pts = np.array([keypoints2[m.trainIdx].pt for m in matches], dtype=np.float32)
+        src_pts = np.array(
+            [keypoints1[m.queryIdx].pt for m in matches], dtype=np.float32
+        )
+        dst_pts = np.array(
+            [keypoints2[m.trainIdx].pt for m in matches], dtype=np.float32
+        )
 
         # Compute parallax vectors at matched points
         parallax_vectors = dst_pts - src_pts
 
         # Interpolate parallax values across the image using RBF or thin-plate spline
-        parallax_map = self._interpolate_parallax(src_pts, parallax_vectors, h_img, w_img)
+        parallax_map = self._interpolate_parallax(
+            src_pts, parallax_vectors, h_img, w_img
+        )
 
         return parallax_map
 
@@ -63,17 +69,17 @@ class ParallaxCorrectionCV:
         vectors: np.ndarray,
         h: int,
         w: int,
-        method: str = "gaussian_blur"
+        method: str = "gaussian_blur",
     ) -> np.ndarray:
         """
         Interpolate parallax vectors across the image using Gaussian smoothing.
-        
+
         Args:
             points: Feature point locations [N, 2]
             vectors: Parallax vectors [N, 2]
             h, w: Output image height and width
             method: Interpolation method
-            
+
         Returns:
             Interpolated parallax map [H, W, 2]
         """
@@ -101,13 +107,13 @@ class ParallaxCorrectionCV:
             sparse_x.astype(np.uint8),
             (count_map == 0).astype(np.uint8),
             3,
-            cv2.INPAINT_TELEA
+            cv2.INPAINT_TELEA,
         ).astype(np.float32)
         parallax_map[..., 1] = cv2.inpaint(
             sparse_y.astype(np.uint8),
             (count_map == 0).astype(np.uint8),
             3,
-            cv2.INPAINT_TELEA
+            cv2.INPAINT_TELEA,
         ).astype(np.float32)
 
         # Gaussian smoothing for smoother transitions
@@ -123,11 +129,11 @@ class ParallaxCorrectionCV:
     ) -> np.ndarray:
         """
         Apply parallax correction by warping the image.
-        
+
         Args:
             image: Input image [H, W, C]
             parallax_map: Parallax shift map [H, W, 2]
-            
+
         Returns:
             Corrected image [H, W, C]
         """
@@ -139,11 +145,7 @@ class ParallaxCorrectionCV:
         map_y = (y + parallax_map[..., 1]).astype(np.float32)
 
         corrected = cv2.remap(
-            image,
-            map_x,
-            map_y,
-            cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REFLECT
+            image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
         )
 
         return corrected
@@ -156,23 +158,31 @@ class ParallaxCorrectionCV:
     ) -> np.ndarray:
         """
         Estimate depth map using stereo matching (for depth-based parallax correction).
-        
+
         Args:
             img_left, img_right: Stereo image pair
             num_disparities: Number of disparity levels
-            
+
         Returns:
             Depth map
         """
-        gray_left = cv2.cvtColor(img_left, cv2.COLOR_BGR2GRAY) if len(img_left.shape) == 3 else img_left
-        gray_right = cv2.cvtColor(img_right, cv2.COLOR_BGR2GRAY) if len(img_right.shape) == 3 else img_right
+        gray_left = (
+            cv2.cvtColor(img_left, cv2.COLOR_BGR2GRAY)
+            if len(img_left.shape) == 3
+            else img_left
+        )
+        gray_right = (
+            cv2.cvtColor(img_right, cv2.COLOR_BGR2GRAY)
+            if len(img_right.shape) == 3
+            else img_right
+        )
 
         stereo = cv2.StereoSGBM_create(
             minDisparity=0,
             numDisparities=num_disparities,
             blockSize=5,
-            P1=8 * 3 * 5 ** 2,
-            P2=32 * 3 * 5 ** 2,
+            P1=8 * 3 * 5**2,
+            P2=32 * 3 * 5**2,
             disp12MaxDiff=1,
             preFilterCap=63,
             uniquenessRatio=10,
@@ -193,12 +203,12 @@ class ParallaxCorrectionCV:
     ) -> np.ndarray:
         """
         Correct parallax based on estimated depth values.
-        
+
         Args:
             image: Input image
             depth_map: Estimated depth map
             reference_depth: Reference depth for normalization
-            
+
         Returns:
             Parallax-corrected image
         """
@@ -215,11 +225,7 @@ class ParallaxCorrectionCV:
         map_y = (y + correction_y).astype(np.float32)
 
         corrected = cv2.remap(
-            image,
-            map_x,
-            map_y,
-            cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REFLECT
+            image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
         )
 
         return corrected

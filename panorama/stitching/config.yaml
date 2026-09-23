@@ -44,6 +44,8 @@ input:
     dslr_fisheye: {width: 9504, height: 6336, projection: fisheye_180, fov_degrees: 180.0, min_frames: 4, max_frames: 8}
     drone_still: {width: 4096, height: 3072, projection: pinhole, min_frames: 20, max_frames: 30}
     mobile: {width: 3000, height: 4000, projection: pinhole, min_frames: 20, max_frames: 30}
+    mobile_square: {width: 2048, height: 2048, projection: pinhole, min_frames: 4, max_frames: 60}
+    mobile_landscape: {width: 1920, height: 1080, projection: pinhole, min_frames: 20, max_frames: 60}
   preserve_original_resolution: true
 loss:
   supervised: {l1_weight: 1.0,ssim_weight: 0.2,perceptual_weight: 0.1}
@@ -57,7 +59,7 @@ stitching:
 correction:
   allow_untrained: false
   checkpoints: {glare: ../pano_ai/checkpoints/glare_best.pt,nadir_zenith: ../pano_ai/checkpoints/nadir_zenith_best.pt,color: ../pano_ai/checkpoints/color_best.pt}
-  toggles: {glare: true,dots: true,nadir_zenith: true,color: true,sharpen: true}
+  toggles: {glare: false,dots: false,nadir_zenith: false,color: false,sharpen: false}
 inference:
   checkpoint: ../pano_ai/checkpoints/panorama_tiled_best.pt
   output_dir: ../outputs/panoramas
@@ -70,11 +72,15 @@ inference:
 advanced_corrections:
   allow_untrained: false
   checkpoints: {parallax: ../pano_ai/checkpoints/parallax_best.pt,ghost_removal: ../pano_ai/checkpoints/ghost_removal_best.pt,seam_blending: ../pano_ai/checkpoints/seam_blending_best.pt,overlap_detection: ../pano_ai/checkpoints/overlap_detection_best.pt,parallax_flow: ../pano_ai/checkpoints/parallax_flow_best.pt}
-  toggles: {parallax: true,ghost_removal: true,seam_blending: true,overlap_detection: true,parallax_flow: true}
+  # Pairwise AI stages remain disabled until panorama-aligned reference/mask
+  # assets and their tiled implementations are available.
+  toggles: {parallax: false,ghost_removal: false,seam_blending: false,overlap_detection: false,parallax_flow: false}
 classical_methods:
   use_classical_overlap_detection: true
   use_classical_parallax_correction: true
   use_classical_seam_blending: true
+  # Ghost removal is only run when the caller provides pre-warped,
+  # panorama-aligned frames; native camera frames are never resized as a proxy.
   use_classical_ghost_removal: true
 classical_parameters:
   overlap_detection: {feature_detector: orb,min_matches: 4}

@@ -42,4 +42,8 @@ def evaluate(model, loader, device, stage="glare"):
             losses.append(F.l1_loss(pred, y).item())
             ps.append(psnr(pred, y))
             ss.append(ssim(pred, y))
-    return {"loss": sum(losses) / max(1, len(losses)), "psnr": sum(ps) / max(1, len(ps)), "ssim": sum(ss) / max(1, len(ss))}
+    return {
+        "loss": sum(losses) / max(1, len(losses)),
+        "psnr": sum(ps) / max(1, len(ps)),
+        "ssim": sum(ss) / max(1, len(ss)),
+    }

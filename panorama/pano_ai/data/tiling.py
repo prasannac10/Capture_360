@@ -1,4 +1,5 @@
 """Original-resolution overlapping tiling utilities for Capture360."""
+
 from dataclasses import dataclass
 from typing import List, Tuple
 import torch
@@ -17,11 +18,15 @@ class TileSpec:
 
     @property
     def normalized_xy(self) -> Tuple[float, float]:
-        return (self.x / max(1, self.image_width - 1),
-                self.y / max(1, self.image_height - 1))
+        return (
+            self.x / max(1, self.image_width - 1),
+            self.y / max(1, self.image_height - 1),
+        )
 
 
-def tile_specs(height: int, width: int, tile_size: int = 1024, overlap: int = 128) -> List[TileSpec]:
+def tile_specs(
+    height: int, width: int, tile_size: int = 1024, overlap: int = 128
+) -> List[TileSpec]:
     if tile_size <= 0 or overlap < 0 or overlap >= tile_size:
         raise ValueError("tile_size must be > 0 and 0 <= overlap < tile_size")
     stride = tile_size - overlap
@@ -35,7 +40,17 @@ def tile_specs(height: int, width: int, tile_size: int = 1024, overlap: int = 12
     idx = 0
     for y in ys:
         for x in xs:
-            specs.append(TileSpec(idx, x, y, min(tile_size, width - x), min(tile_size, height - y), width, height))
+            specs.append(
+                TileSpec(
+                    idx,
+                    x,
+                    y,
+                    min(tile_size, width - x),
+                    min(tile_size, height - y),
+                    width,
+                    height,
+                )
+            )
             idx += 1
     return specs
 
@@ -48,15 +63,21 @@ def extract_tiles(image: torch.Tensor, tile_size: int = 1024, overlap: int = 128
     specs = tile_specs(h, w, tile_size, overlap)
     tiles = []
     for s in specs:
-        crop = image[:, s.y:s.y+s.height, s.x:s.x+s.width]
+        crop = image[:, s.y : s.y + s.height, s.x : s.x + s.width]
         pad_h, pad_w = tile_size - crop.shape[-2], tile_size - crop.shape[-1]
         if pad_h or pad_w:
-            crop = F.pad(crop, (0, pad_w, 0, pad_h), mode="reflect" if min(crop.shape[-2:]) > 1 else "replicate")
+            crop = F.pad(
+                crop,
+                (0, pad_w, 0, pad_h),
+                mode="reflect" if min(crop.shape[-2:]) > 1 else "replicate",
+            )
         tiles.append(crop)
     return torch.stack(tiles), specs
 
 
 def raised_cosine_window(tile_size: int, device, dtype):
     # Hann-like 2-D weighting reduces visible seams when tiled features are fused.
-    w = torch.hann_window(tile_size, periodic=False, device=device, dtype=dtype).clamp_min(1e-3)
+    w = torch.hann_window(
+        tile_size, periodic=False, device=device, dtype=dtype
+    ).clamp_min(1e-3)
     return torch.outer(w, w)
