@@ -1,1 +1,0 @@
-Rejected visual trial: local flow reduced internal overlap errors but introduced wavy furniture edges. Do not use as the final output. Local alignment remains disabled.
