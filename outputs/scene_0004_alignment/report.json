@@ -1,0 +1,311 @@
+{
+  "exposure_gains": [
+    1.0148316676489901,
+    0.9886670819093976,
+    0.9920254064244607,
+    0.9982597039444729,
+    1.004956126590214,
+    0.9975491061830988,
+    1.039993284415743,
+    1.030234294669456,
+    1.006401717816674,
+    0.9733487019586406,
+    0.9256536703174788,
+    0.9219296277482799,
+    0.9263336502579403,
+    0.9512262906579603,
+    1.0401747543997664,
+    1.0549373891708778,
+    1.0682294765159535,
+    1.0273271365507577,
+    0.9592930386810467,
+    0.9309807558298265,
+    0.9467436186805316,
+    0.9622262645379775,
+    0.8728847979683012,
+    0.8637278026665643,
+    0.8993700510991125,
+    1.032607074493685,
+    0.9747875278195224,
+    1.1081685886237738,
+    1.0417154605602048,
+    1.057264192444134,
+    1.1951081204404297,
+    1.25,
+    1.1209051769606668,
+    1.0585802079396154,
+    0.9198845284133007,
+    0.8,
+    1.0034446164867277,
+    1.0036118023822456,
+    1.0138792218267747,
+    1.0276921066872688,
+    1.0923144462500032,
+    1.0293307563531904
+  ],
+  "local_alignment": {
+    "method": "bounded_reference_flow",
+    "work_size": [
+      1024,
+      512
+    ],
+    "frames": [
+      {
+        "accepted": true,
+        "support_pixels": 16250,
+        "mean_error_before": 9.382953643798828,
+        "mean_error_after": 8.557415008544922
+      },
+      {
+        "accepted": true,
+        "support_pixels": 14113,
+        "mean_error_before": 9.646780014038086,
+        "mean_error_after": 8.399702072143555
+      },
+      {
+        "accepted": true,
+        "support_pixels": 15695,
+        "mean_error_before": 8.897929191589355,
+        "mean_error_after": 7.703217506408691
+      },
+      {
+        "accepted": true,
+        "support_pixels": 13110,
+        "mean_error_before": 9.163996696472168,
+        "mean_error_after": 8.133333206176758
+      },
+      {
+        "accepted": true,
+        "support_pixels": 4726,
+        "mean_error_before": 7.827126502990723,
+        "mean_error_after": 7.303004741668701
+      },
+      {
+        "accepted": true,
+        "support_pixels": 4429,
+        "mean_error_before": 8.000226020812988,
+        "mean_error_after": 7.3980584144592285
+      },
+      {
+        "accepted": true,
+        "support_pixels": 5928,
+        "mean_error_before": 10.270411491394043,
+        "mean_error_after": 7.422402381896973
+      },
+      {
+        "accepted": true,
+        "support_pixels": 6872,
+        "mean_error_before": 10.418655395507812,
+        "mean_error_after": 7.42374849319458
+      },
+      {
+        "accepted": true,
+        "support_pixels": 2903,
+        "mean_error_before": 12.321736335754395,
+        "mean_error_after": 8.017223358154297
+      },
+      {
+        "accepted": true,
+        "support_pixels": 728,
+        "mean_error_before": 12.197802543640137,
+        "mean_error_after": 6.864010810852051
+      },
+      {
+        "accepted": true,
+        "support_pixels": 3198,
+        "mean_error_before": 16.628517150878906,
+        "mean_error_after": 9.249530792236328
+      },
+      {
+        "accepted": true,
+        "support_pixels": 6768,
+        "mean_error_before": 13.671247482299805,
+        "mean_error_after": 9.142287254333496
+      },
+      {
+        "accepted": true,
+        "support_pixels": 7231,
+        "mean_error_before": 12.922832489013672,
+        "mean_error_after": 9.639192581176758
+      },
+      {
+        "accepted": false,
+        "support_pixels": 4231,
+        "mean_error_before": 10.530370712280273,
+        "mean_error_after": 10.157882690429688
+      },
+      {
+        "accepted": false,
+        "support_pixels": 57,
+        "mean_error_before": 8.280701637268066,
+        "mean_error_after": 6.561403274536133
+      },
+      {
+        "accepted": true,
+        "support_pixels": 201,
+        "mean_error_before": 9.104477882385254,
+        "mean_error_after": 8.522388458251953
+      },
+      {
+        "accepted": true,
+        "support_pixels": 1681,
+        "mean_error_before": 15.845330238342285,
+        "mean_error_after": 8.878643989562988
+      },
+      {
+        "accepted": true,
+        "support_pixels": 891,
+        "mean_error_before": 16.711559295654297,
+        "mean_error_after": 12.705948829650879
+      },
+      {
+        "accepted": true,
+        "support_pixels": 3851,
+        "mean_error_before": 23.040508270263672,
+        "mean_error_after": 11.93118667602539
+      },
+      {
+        "accepted": true,
+        "support_pixels": 1882,
+        "mean_error_before": 15.700318336486816,
+        "mean_error_after": 8.667375564575195
+      },
+      {
+        "accepted": true,
+        "support_pixels": 1656,
+        "mean_error_before": 11.585748672485352,
+        "mean_error_after": 7.765096664428711
+      },
+      {
+        "accepted": true,
+        "support_pixels": 1467,
+        "mean_error_before": 12.44921588897705,
+        "mean_error_after": 8.472393035888672
+      },
+      {
+        "accepted": true,
+        "support_pixels": 1823,
+        "mean_error_before": 15.718047142028809,
+        "mean_error_after": 10.244651794433594
+      },
+      {
+        "accepted": true,
+        "support_pixels": 2531,
+        "mean_error_before": 14.801264762878418,
+        "mean_error_after": 9.818253517150879
+      },
+      {
+        "accepted": true,
+        "support_pixels": 698,
+        "mean_error_before": 21.28223419189453,
+        "mean_error_after": 11.422636032104492
+      },
+      {
+        "accepted": false,
+        "support_pixels": 68,
+        "mean_error_before": 10.823529243469238,
+        "mean_error_after": 9.264705657958984
+      },
+      {
+        "accepted": true,
+        "support_pixels": 12785,
+        "mean_error_before": 9.140242576599121,
+        "mean_error_after": 8.426984786987305
+      },
+      {
+        "accepted": true,
+        "support_pixels": 5660,
+        "mean_error_before": 7.644346237182617,
+        "mean_error_after": 6.9943461418151855
+      },
+      {
+        "accepted": true,
+        "support_pixels": 5473,
+        "mean_error_before": 8.7155122756958,
+        "mean_error_after": 7.9192399978637695
+      },
+      {
+        "accepted": true,
+        "support_pixels": 4715,
+        "mean_error_before": 7.993637561798096,
+        "mean_error_after": 7.283775329589844
+      },
+      {
+        "accepted": true,
+        "support_pixels": 6037,
+        "mean_error_before": 7.836508274078369,
+        "mean_error_after": 6.843465328216553
+      },
+      {
+        "accepted": true,
+        "support_pixels": 282,
+        "mean_error_before": 11.755319595336914,
+        "mean_error_after": 9.794325828552246
+      },
+      {
+        "accepted": false,
+        "support_pixels": 342,
+        "mean_error_before": 6.94444465637207,
+        "mean_error_after": 6.906432628631592
+      },
+      {
+        "accepted": true,
+        "support_pixels": 1969,
+        "mean_error_before": 12.158455848693848,
+        "mean_error_after": 9.056373596191406
+      },
+      {
+        "accepted": true,
+        "support_pixels": 2495,
+        "mean_error_before": 11.79318618774414,
+        "mean_error_after": 8.891783714294434
+      },
+      {
+        "accepted": true,
+        "support_pixels": 678,
+        "mean_error_before": 14.38938045501709,
+        "mean_error_after": 11.085545539855957
+      },
+      {
+        "accepted": true,
+        "support_pixels": 1413,
+        "mean_error_before": 13.305732727050781,
+        "mean_error_after": 9.523000717163086
+      },
+      {
+        "accepted": true,
+        "support_pixels": 1254,
+        "mean_error_before": 9.066986083984375,
+        "mean_error_after": 8.042264938354492
+      },
+      {
+        "accepted": false,
+        "support_pixels": 1495,
+        "mean_error_before": 9.940467834472656,
+        "mean_error_after": 9.449498176574707
+      },
+      {
+        "accepted": true,
+        "support_pixels": 1690,
+        "mean_error_before": 12.593491554260254,
+        "mean_error_after": 10.409467697143555
+      },
+      {
+        "accepted": false,
+        "support_pixels": 362,
+        "mean_error_before": 8.176795959472656,
+        "mean_error_after": 8.168508529663086
+      },
+      {
+        "accepted": true,
+        "support_pixels": 4525,
+        "mean_error_before": 11.384530067443848,
+        "mean_error_after": 8.52596664428711
+      }
+    ]
+  },
+  "seam_width": 2048,
+  "blend_bands": 3,
+  "seam_method": "graph_cut",
+  "coverage_fallback_pixels": 0
+}

@@ -66,7 +66,10 @@ def stitch(
         image_paths = [Path(image) for image in inputs]
         dimensions = []
         for image in image_paths:
-            frame = cv2.imread(str(image), cv2.IMREAD_COLOR)
+            flags = cv2.IMREAD_COLOR
+            if kwargs.get("poses_path"):
+                flags |= cv2.IMREAD_IGNORE_ORIENTATION
+            frame = cv2.imread(str(image), flags)
             if frame is None:
                 raise ValueError(f"Could not read input image: {image}")
             dimensions.append((frame.shape[1], frame.shape[0]))
@@ -76,6 +79,8 @@ def stitch(
             config["input"],
             profile,
         )
+        if kwargs.get("poses_path") and selected_profile["projection"] != "pinhole":
+            raise ValueError("ARCore poses require a pinhole capture profile")
         if (
             not selected_profile["min_frames"]
             <= len(dimensions)
@@ -84,6 +89,20 @@ def stitch(
             raise ValueError(
                 f"{selected_name} requires {selected_profile['min_frames']}..{selected_profile['max_frames']} frames; got {len(dimensions)}"
             )
+        source_parents = {path.resolve().parent for path in image_paths}
+        source_folder = next(iter(source_parents)) if len(source_parents) == 1 else None
+        scene_name = ((source_folder.parent.name if source_folder.name == 'images' else source_folder.name)
+                      if source_folder is not None else None)
+        explicit_pose_options = kwargs.pop('pose_options', None)
+        pose_options = dict(config.get('classical_pose', {}))
+        scene_settings = config.get('classical_scene_overrides', {}).get(scene_name, {})
+        if scene_settings.get('enabled', False):
+            for key in ('seam_width', 'blend_bands', 'local_alignment'):
+                if key in scene_settings:
+                    pose_options[key] = scene_settings[key]
+            pose_options['source_regions'] = scene_settings.get('source_regions', [])
+        if explicit_pose_options is not None:
+            pose_options.update(explicit_pose_options)
         panorama = stitch_files(
             image_paths,
             output_dir / "raw_classical_panorama.png",
@@ -92,13 +111,18 @@ def stitch(
                 int(config["stitching"]["output_height"]),
             ),
             profile=selected_profile,
+            pose_options=pose_options,
             **kwargs,
         )
         corrected, metadata = ClassicalCorrectionPipeline(config).run(
             panorama,
             [],
             output_dir=output_dir,
+            scene_name=scene_name,
         )
+        if kwargs.get("poses_path"):
+            geometry_path = output_dir / "raw_classical_panorama_geometry.json"
+            metadata["stitching"] = json.loads(geometry_path.read_text(encoding="utf-8"))
         if not cv2.imwrite(str(final_output), corrected):
             raise OSError(f"Could not write final panorama: {final_output}")
         (output_dir / "metadata.json").write_text(

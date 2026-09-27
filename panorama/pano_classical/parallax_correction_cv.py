@@ -28,7 +28,7 @@ class ParallaxCorrectionCV:
         matches: list,
     ) -> np.ndarray:
         """
-        Estimate parallax shift vectors using matched features.
+        Estimate a target-to-source sampling offset using geometry and matched residuals.
 
         Args:
             img1, img2: Input images
@@ -37,31 +37,25 @@ class ParallaxCorrectionCV:
             matches: Matched features
 
         Returns:
-            Parallax shift map [H, W, 2]
+            Backward sampling offset [H, W, 2] on the target canvas
         """
-        h_img, w_img = img1.shape[:2]
-        parallax_map = np.zeros((h_img, w_img, 2), dtype=np.float32)
-
+        h_img, w_img = img2.shape[:2]
+        if img1.shape[:2] != img2.shape[:2]:
+            raise ValueError('Parallax correction requires views on the same canvas')
+        inverse = np.linalg.inv(np.asarray(h, dtype=np.float64))
+        yy, xx = np.indices((h_img, w_img), dtype=np.float32)
+        grid = np.stack((xx, yy), axis=-1)
+        mapped = cv2.perspectiveTransform(grid.reshape(-1, 1, 2), inverse).reshape(h_img, w_img, 2)
+        field = mapped - grid
         if len(matches) < 4:
-            return parallax_map
-
-        # Extract matched point pairs
-        src_pts = np.array(
-            [keypoints1[m.queryIdx].pt for m in matches], dtype=np.float32
-        )
-        dst_pts = np.array(
-            [keypoints2[m.trainIdx].pt for m in matches], dtype=np.float32
-        )
-
-        # Compute parallax vectors at matched points
-        parallax_vectors = dst_pts - src_pts
-
-        # Interpolate parallax values across the image using RBF or thin-plate spline
-        parallax_map = self._interpolate_parallax(
-            src_pts, parallax_vectors, h_img, w_img
-        )
-
-        return parallax_map
+            return field
+        source = np.float32([keypoints1[m.queryIdx].pt for m in matches])
+        target = np.float32([keypoints2[m.trainIdx].pt for m in matches])
+        predicted = cv2.perspectiveTransform(target[:, None], inverse)[:, 0]
+        residual = source - predicted
+        valid = np.isfinite(residual).all(axis=1) & (np.linalg.norm(residual, axis=1) < 10)
+        field += self._interpolate_parallax(target[valid], residual[valid], h_img, w_img)
+        return field
 
     def _interpolate_parallax(
         self,
@@ -97,28 +91,14 @@ class ParallaxCorrectionCV:
             sparse_y[py, px] += vy
             count_map[py, px] += 1
 
-        # Average overlapping contributions
-        mask = count_map > 0
-        sparse_x[mask] /= count_map[mask]
-        sparse_y[mask] /= count_map[mask]
-
-        # Inpaint and smooth across the entire image
-        parallax_map[..., 0] = cv2.inpaint(
-            sparse_x.astype(np.uint8),
-            (count_map == 0).astype(np.uint8),
-            3,
-            cv2.INPAINT_TELEA,
-        ).astype(np.float32)
-        parallax_map[..., 1] = cv2.inpaint(
-            sparse_y.astype(np.uint8),
-            (count_map == 0).astype(np.uint8),
-            3,
-            cv2.INPAINT_TELEA,
-        ).astype(np.float32)
-
-        # Gaussian smoothing for smoother transitions
-        parallax_map[..., 0] = cv2.GaussianBlur(parallax_map[..., 0], (15, 15), 2.0)
-        parallax_map[..., 1] = cv2.GaussianBlur(parallax_map[..., 1], (15, 15), 2.0)
+        # Normalized float convolution preserves signed subpixel displacement.
+        # Unsupported regions receive zero residual, not invented displacements.
+        sigma = 8.0
+        support = cv2.GaussianBlur(count_map, (0, 0), sigma)
+        valid = support > 1e-6
+        for channel, sparse in enumerate((sparse_x, sparse_y)):
+            smoothed = cv2.GaussianBlur(sparse, (0, 0), sigma)
+            parallax_map[..., channel][valid] = smoothed[valid] / support[valid]
 
         return parallax_map
 
@@ -132,7 +112,7 @@ class ParallaxCorrectionCV:
 
         Args:
             image: Input image [H, W, C]
-            parallax_map: Parallax shift map [H, W, 2]
+            parallax_map: Backward sampling offset [H, W, 2] on the target canvas
 
         Returns:
             Corrected image [H, W, C]

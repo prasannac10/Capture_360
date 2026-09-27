@@ -168,7 +168,7 @@ class OverlapDetectorCV:
 
         # Use contour intersection
         overlap_pct = self._estimate_overlap_percentage(
-            warped_corners[0], pts_overlap, w1, h1, w2, h2
+            warped_corners[0], pts_overlap, h1, w1, h2, w2
         )
 
         return h, overlap_pct, inliers
@@ -194,19 +194,12 @@ class OverlapDetectorCV:
         Returns:
             Overlap percentage (0-100)
         """
-        # Create polygon from warped corners
-        poly1 = cv2.convexHull(warped_corners.astype(np.int32))
-        poly2 = cv2.convexHull(img2_corners.astype(np.int32))
-
-        # Calculate intersection area using masks
-        mask1 = np.zeros((h2, w2), dtype=np.uint8)
-        mask2 = np.zeros((h2, w2), dtype=np.uint8)
-
-        cv2.fillPoly(mask1, [poly1], 1)
-        cv2.fillPoly(mask2, [poly2], 1)
-
-        intersection = np.sum((mask1 & mask2) > 0)
-        union = np.sum((mask1 | mask2) > 0)
+        if not np.isfinite(warped_corners).all():
+            return 0.0
+        poly1 = cv2.convexHull(warped_corners.astype(np.float32))
+        poly2 = cv2.convexHull(img2_corners.astype(np.float32))
+        intersection, _ = cv2.intersectConvexConvex(poly1, poly2)
+        union = cv2.contourArea(poly1) + cv2.contourArea(poly2) - intersection
 
         if union == 0:
             return 0.0
@@ -234,15 +227,11 @@ class OverlapDetectorCV:
         # Warp img1 to img2 space
         warped = cv2.warpPerspective(img1, h, (w2, h2))
 
-        # Create overlap mask
-        gray1 = (
-            cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-            if len(warped.shape) == 3
-            else warped
-        )
-        gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY) if len(img2.shape) == 3 else img2
-
-        overlap_mask = (gray1 > 0) & (gray2 > 0)
+        # Geometric coverage includes valid black pixels.
+        overlap_mask = cv2.warpPerspective(
+            np.ones((h1, w1), np.uint8), h, (w2, h2),
+            flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT
+        ) > 0
 
         return warped, overlap_mask
 

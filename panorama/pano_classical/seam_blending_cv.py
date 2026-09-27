@@ -3,7 +3,6 @@
 import cv2
 import numpy as np
 from typing import Tuple, Optional, List
-from scipy.ndimage import distance_transform_edt
 
 
 class SeamBlendingCV:
@@ -16,6 +15,8 @@ class SeamBlendingCV:
         Args:
             blend_type: "multiband", "feather", or "graph_cut"
         """
+        if blend_type not in {"multiband", "feather", "graph_cut"}:
+            raise ValueError(f"Unknown blend type: {blend_type}")
         self.blend_type = blend_type
 
     def find_seam_line(
@@ -25,7 +26,7 @@ class SeamBlendingCV:
         overlap_mask: np.ndarray,
     ) -> np.ndarray:
         """
-        Find optimal seam line in overlap region using graph cut.
+        Find a vertical minimum-cost seam and return left-side ownership.
 
         Args:
             img1, img2: Input images to blend
@@ -34,69 +35,47 @@ class SeamBlendingCV:
         Returns:
             Seam mask [H, W] (1 = take from img1, 0 = take from img2)
         """
-        h, w = overlap_mask.shape[:2]
+        valid = np.asarray(overlap_mask, dtype=bool)
+        if valid.shape != img1.shape[:2] or img1.shape != img2.shape:
+            raise ValueError('Images and overlap mask must share a canvas')
+        # The legacy pair API supplies overlap only. Require one rectangular
+        # overlap rather than inventing validity outside arbitrary holes.
+        yy, xx = np.where(valid)
+        if not len(xx):
+            raise ValueError('Cannot select a seam without overlap')
+        x0, x1, y0, y1 = xx.min(), xx.max() + 1, yy.min(), yy.max() + 1
+        if not valid[y0:y1, x0:x1].all():
+            raise ValueError('Irregular overlaps require source validity masks and spherical_composition.seam_masks')
+        difference = cv2.absdiff(img1, img2).astype(np.float32)
+        if difference.ndim == 3:
+            difference = difference.mean(axis=2)
+        region = self._compute_minimum_cost_seam(difference[y0:y1, x0:x1], valid[y0:y1, x0:x1])
+        ownership = np.zeros(valid.shape, dtype=bool)
+        ownership[:, :x0] = True
+        ownership[y0:y1, x0:x1] = region
+        ownership[:y0, :x0 + np.count_nonzero(region[0])] = True
+        ownership[y1:, :x0 + np.count_nonzero(region[-1])] = True
+        return ownership
 
-        # Compute cost function based on image differences
-        if len(img1.shape) == 3:
-            diff = cv2.absdiff(img1, img2).mean(axis=2)
-        else:
-            diff = cv2.absdiff(img1, img2)
-
-        # Create cost map (lower cost = better seam)
-        cost_map = diff.copy()
-        cost_map[~overlap_mask] = np.inf
-
-        # Find minimum cost path using dynamic programming
-        seam_mask = self._compute_minimum_cost_seam(cost_map, overlap_mask)
-
-        return seam_mask
-
-    def _compute_minimum_cost_seam(
-        self,
-        cost_map: np.ndarray,
-        mask: np.ndarray,
-    ) -> np.ndarray:
-        """
-        Compute minimum cost seam using dynamic programming.
-
-        Args:
-            cost_map: Cost function for seam placement
-            mask: Valid region mask
-
-        Returns:
-            Seam mask
-        """
+    def _compute_minimum_cost_seam(self, cost_map, mask):
+        """Return ownership to the left of a connected vertical minimum-cost path."""
         h, w = cost_map.shape
-        seam_mask = np.zeros((h, w), dtype=bool)
-
-        # Compute cumulative cost from top
-        cumulative_cost = np.full((h, w), np.inf, dtype=np.float32)
-        cumulative_cost[0, :] = cost_map[0, :]
-
-        for i in range(1, h):
-            for j in range(w):
-                if mask[i, j]:
-                    candidates = [
-                        cumulative_cost[i - 1, max(0, j - 1)],
-                        cumulative_cost[i - 1, j],
-                        cumulative_cost[i - 1, min(w - 1, j + 1)],
-                    ]
-                    cumulative_cost[i, j] = cost_map[i, j] + np.min(candidates)
-
-        # Backtrack to find seam path
-        seam_col = np.argmin(cumulative_cost[-1, :])
-        seam_mask[-1, seam_col] = True
-
-        for i in range(h - 2, -1, -1):
-            candidates = [
-                cumulative_cost[i, max(0, seam_col - 1)],
-                cumulative_cost[i, seam_col],
-                cumulative_cost[i, min(w - 1, seam_col + 1)],
-            ]
-            seam_col = max(0, seam_col - 1) + np.argmin(candidates)
-            seam_mask[i, seam_col] = True
-
-        return seam_mask
+        if not np.asarray(mask, bool).all():
+            raise ValueError('Minimum-cost path requires a rectangular valid overlap')
+        cumulative = cost_map[0].astype(np.float32).copy()
+        parents = np.zeros((h, w), np.int8)
+        for row in range(1, h):
+            choices = np.stack((np.r_[np.inf, cumulative[:-1]], cumulative,
+                                np.r_[cumulative[1:], np.inf]))
+            choice = np.argmin(choices, axis=0)
+            parents[row] = choice - 1
+            cumulative = cost_map[row] + choices[choice, np.arange(w)]
+        column = int(np.argmin(cumulative))
+        ownership = np.zeros((h, w), bool)
+        for row in range(h - 1, -1, -1):
+            ownership[row, :column + 1] = True
+            column += int(parents[row, column])
+        return ownership
 
     def blend_images(
         self,
@@ -199,14 +178,10 @@ class SeamBlendingCV:
         sigma: float = 15.0,
     ) -> np.ndarray:
         """Create smooth feather weight around seam."""
-        # Distance transform from seam line
-        dist = distance_transform_edt(~seam_mask).astype(np.float32)
-
-        # Gaussian smooth falloff
-        weight = np.exp(-(dist**2) / (2 * sigma**2))
-        weight = np.clip(weight, 0, 1)
-
-        return weight
+        # Ownership is a region, not a line. Both constant masks must retain
+        # the corresponding source exactly.
+        weight = np.asarray(seam_mask, dtype=np.float32)
+        return cv2.GaussianBlur(weight, (0, 0), sigma)
 
     def _graph_cut_blend(
         self,
@@ -215,36 +190,7 @@ class SeamBlendingCV:
         seam_mask: np.ndarray,
     ) -> np.ndarray:
         """Graph-cut based blending for optimal boundaries."""
-        # Use seam mask to define regions
-        weight_map = self._create_feather_weight(seam_mask, sigma=10)
-
-        # Iteratively refine blend using local optimization
-        blended = img1.copy().astype(np.float32)
-
-        for _ in range(3):  # Refinement iterations
-            gradient1 = cv2.Sobel(img1.astype(np.float32), cv2.CV_32F, 1, 0, ksize=3)
-            gradient2 = cv2.Sobel(img2.astype(np.float32), cv2.CV_32F, 1, 0, ksize=3)
-
-            # Adjust weight based on gradient magnitude
-            if len(gradient1.shape) == 3:
-                grad_mag1 = np.sqrt((gradient1**2).sum(axis=2))
-                grad_mag2 = np.sqrt((gradient2**2).sum(axis=2))
-            else:
-                grad_mag1 = np.abs(gradient1)
-                grad_mag2 = np.abs(gradient2)
-
-            # Higher weight where img1 has lower gradients
-            local_weight = 1.0 / (1.0 + grad_mag1 / (grad_mag2 + 1e-6))
-            local_weight = cv2.GaussianBlur(local_weight, (5, 5), 1.0)
-
-            weight_map = weight_map * 0.7 + local_weight * 0.3
-
-        blended = (
-            img1.astype(np.float32) * weight_map[..., None]
-            + img2.astype(np.float32) * (1 - weight_map)[..., None]
-        )
-
-        return np.clip(blended, 0, 255).astype(np.uint8)
+        raise ValueError('Graph-cut needs source validity masks; use spherical_composition.seam_masks before multiband blending')
 
 
 class GhostRemovalCV:
@@ -257,6 +203,8 @@ class GhostRemovalCV:
         Args:
             threshold_ratio: Threshold for identifying ghosts (0-1)
         """
+        if not 0 <= threshold_ratio <= 1:
+            raise ValueError('threshold_ratio must be between zero and one')
         self.threshold_ratio = threshold_ratio
 
     def detect_ghost_regions(
@@ -275,20 +223,20 @@ class GhostRemovalCV:
         Returns:
             Ghost mask [H, W]
         """
-        # Compute difference in overlap region
-        if len(img1.shape) == 3:
-            diff = cv2.absdiff(img1, img2).mean(axis=2)
-        else:
-            diff = cv2.absdiff(img1, img2)
-
-        # Threshold to find significant differences
-        threshold = np.percentile(diff[overlap_mask], 75)
-        potential_ghost = diff > threshold * self.threshold_ratio
-
-        # Filter by connected components (remove noise)
-        ghost_mask = self._filter_connected_components(potential_ghost, overlap_mask)
-
-        return ghost_mask
+        valid = np.asarray(overlap_mask, dtype=bool)
+        if valid.shape != img1.shape[:2] or img1.shape != img2.shape:
+            raise ValueError('Images and overlap mask must share a canvas')
+        if not valid.any():
+            return np.zeros(valid.shape, dtype=bool)
+        delta = img1.astype(np.float32) - img2.astype(np.float32)
+        # Remove a global exposure offset before evaluating disagreement.
+        delta -= np.median(delta[valid], axis=0)
+        diff = np.abs(delta).mean(axis=2) if delta.ndim == 3 else np.abs(delta)
+        median = float(np.median(diff[valid]))
+        mad = float(np.median(np.abs(diff[valid] - median)))
+        threshold = max(12.0, 255 * self.threshold_ratio, median + 3 * 1.4826 * mad)
+        potential_ghost = (diff > threshold) & valid
+        return self._filter_connected_components(potential_ghost, valid)
 
     def _filter_connected_components(
         self,
@@ -307,7 +255,7 @@ class GhostRemovalCV:
         for i in range(1, num_features):
             component = labeled == i
             if np.sum(component & valid_region) > min_size:
-                filtered[component] = True
+                filtered[component & valid_region] = True
 
         return filtered
 
@@ -317,7 +265,7 @@ class GhostRemovalCV:
         ghost_mask: np.ndarray,
     ) -> np.ndarray:
         """
-        Remove ghosts using Poisson inpainting.
+        Legacy small-defect repair using Telea inpainting (not source deghosting).
 
         Args:
             panorama: Input panorama
@@ -329,11 +277,14 @@ class GhostRemovalCV:
         if not ghost_mask.any():
             return panorama
 
+        if np.mean(ghost_mask > 0) > 0.01:
+            raise ValueError("Large ghost regions need source selection, not inpainting")
+
         # Dilate mask slightly to ensure smooth transitions
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         dilated_mask = cv2.dilate(ghost_mask.astype(np.uint8), kernel, iterations=2)
 
-        # Apply Poisson inpainting
+        # Apply Telea inpainting
         restored = cv2.inpaint(panorama, dilated_mask, 5, cv2.INPAINT_TELEA)
 
         return restored
@@ -353,24 +304,14 @@ class GhostRemovalCV:
         Returns:
             Ghost-reduced panorama
         """
-        if not images_list:
-            return images_list[0] if images_list else None
-
-        # Stack images and compute weighted median
-        valid_regions = [~mask for mask in ghost_mask_list]
-
-        # For each pixel, use median of non-ghost pixels
-        result = np.zeros_like(images_list[0], dtype=np.float32)
-        weight_sum = np.zeros(images_list[0].shape[:2], dtype=np.float32)
-
-        for img, valid in zip(images_list, valid_regions):
-            result += img.astype(np.float32) * valid[..., None].astype(np.float32)
-            weight_sum += valid.astype(np.float32)
-
-        # Avoid division by zero
-        weight_sum[weight_sum == 0] = 1.0
-        result = result / weight_sum[..., None]
-
+        if not images_list or len(images_list) != len(ghost_mask_list):
+            raise ValueError('Provide one exclusion mask per source image')
+        values = np.stack(images_list).astype(np.float32)
+        valid = ~np.stack(ghost_mask_list).astype(bool)
+        if valid.shape != values.shape[:3]:
+            raise ValueError('Ghost masks must match source image dimensions')
+        masked = np.ma.array(values, mask=np.broadcast_to(~valid[..., None], values.shape))
+        result = np.ma.median(masked, axis=0).filled(0)
         return np.clip(result, 0, 255).astype(np.uint8)
 
     def detect_motion_blur(

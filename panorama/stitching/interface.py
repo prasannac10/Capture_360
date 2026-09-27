@@ -21,12 +21,29 @@ def _classical(args: argparse.Namespace) -> None:
 
     if not image_paths:
         raise ValueError("Provide one or more paths with --images")
+    if not args.poses:
+        parents = {Path(path).resolve().parent for path in image_paths}
+        if len(parents) == 1:
+            candidate = next(iter(parents)) / "ar_poses.jsonl"
+            if candidate.is_file():
+                args.poses = str(candidate)
+                print(f"Using capture poses: {candidate}")
+    if args.poses:
+        from panorama.pano_classical.pose_stitcher import load_pose_records
+        records = load_pose_records(args.poses)
+        excluded = [path for path in image_paths if Path(path).stem not in records]
+        image_paths = list(dict.fromkeys(path for path in image_paths if Path(path).stem in records))
+        if excluded:
+            print(f"Excluded {len(excluded)} image(s) without capture poses: {excluded}")
+        if not image_paths:
+            raise ValueError("No input images match the supplied poses")
     result = stitch(
         image_paths,
         args.output,
         config_path=args.config,
         profile=args.profile,
         engine="classical",
+        poses_path=args.poses,
     )
     print(f"Classical panorama output directory: {Path(args.output).resolve()}")
     print(f"Output shape: {result.shape[1]}x{result.shape[0]}")
@@ -73,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["auto", "dslr_fisheye", "drone_still", "mobile", "mobile_square", "mobile_landscape"],
     )
     classical.set_defaults(func=_classical)
+    classical.add_argument("--poses", help="ARCore poses for spherical stitching; auto-detected as ar_poses.jsonl when inputs share a folder.")
 
     ai = subparsers.add_parser(
         "ai", help="Stitch a Capture360 session with the tiled AI model."

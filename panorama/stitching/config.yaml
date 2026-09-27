@@ -72,17 +72,62 @@ inference:
 advanced_corrections:
   allow_untrained: false
   checkpoints: {parallax: ../pano_ai/checkpoints/parallax_best.pt,ghost_removal: ../pano_ai/checkpoints/ghost_removal_best.pt,seam_blending: ../pano_ai/checkpoints/seam_blending_best.pt,overlap_detection: ../pano_ai/checkpoints/overlap_detection_best.pt,parallax_flow: ../pano_ai/checkpoints/parallax_flow_best.pt}
-  # Pairwise AI stages remain disabled until panorama-aligned reference/mask
-  # assets and their tiled implementations are available.
+  # AI/legacy advanced stages. These are NOT the classical activation switches.
+  # Classical source correction uses classical_pose; finishing (including feet
+  # removal) uses classical_finishing below. Keep these false for classical runs.
   toggles: {parallax: false,ghost_removal: false,seam_blending: false,overlap_detection: false,parallax_flow: false}
+classical_finishing:
+  # Classical-only overrides; learned AI correction settings remain separate.
+  object_removal: true
+  color: true
+  sharpen: true
+classical_pose:
+  # These run on source frames before final composition, only with ARCore poses.
+  # Requires Capture360's guided ring layout in capture-info.json.
+  recover_capture_headings: true
+  refine_poses: true
+  exposure_compensation: true
+  seam_blending: true
+  # Experimental: scene_0004 trials showed bent edges; keep disabled.
+  local_alignment: false
+  # Seam canvas and blending depth, independently configurable.
+  seam_width: 1024
+  blend_bands: 5
+classical_scene_overrides:
+  # Reviewed per-scene settings; other scenes retain classical_pose defaults.
+  scene_0004:
+    enabled: true
+    seam_width: 2048
+    blend_bands: 3
+    # Structure-pinning trials introduced steps at region boundaries.
+    source_regions: []
 classical_methods:
+  # Legacy finishing controls. Source-level ARCore stages use classical_pose above.
   use_classical_overlap_detection: true
   use_classical_parallax_correction: true
   use_classical_seam_blending: true
-  # Ghost removal is only run when the caller provides pre-warped,
-  # panorama-aligned frames; native camera frames are never resized as a proxy.
+  # Post-composition geometry/ghost removal is skipped; ownership is chosen
+  # on individual source views before blending.
   use_classical_ghost_removal: true
 classical_parameters:
+  object_removal:
+    # Manual normalized regions, selected by the input scene folder name.
+    # Unknown scenes are skipped instead of reusing another scene's mask.
+    scenes:
+      scene_0004:
+        max_area_fraction: 0.015
+        regions:
+          - polygon: [[0.457, 0.788], [0.508, 0.788], [0.510, 0.835], [0.489, 0.885], [0.447, 0.892], [0.439, 0.861]]
+            donor_offset: [0.15, 0.0]
+          - polygon: [[0.509, 0.790], [0.540, 0.794], [0.561, 0.827], [0.562, 0.857], [0.544, 0.869], [0.518, 0.843]]
+            donor_offset: [0.15, 0.0]
+      scene_0005:
+        max_area_fraction: 0.015
+        regions:
+          - polygon: [[0.398, 0.778], [0.438, 0.778], [0.452, 0.846], [0.446, 0.882], [0.391, 0.884], [0.386, 0.839]]
+            donor_offset: [0.16, 0.0]
+          - polygon: [[0.447, 0.776], [0.488, 0.775], [0.518, 0.796], [0.522, 0.846], [0.494, 0.855], [0.447, 0.829]]
+            donor_offset: [0.16, 0.0]
   overlap_detection: {feature_detector: orb,min_matches: 4}
   parallax_correction: {depth_estimation_method: stereo_sgbm,interpolation_method: gaussian_blur}
   seam_blending: {blend_type: multiband,seam_sigma: 15.0}

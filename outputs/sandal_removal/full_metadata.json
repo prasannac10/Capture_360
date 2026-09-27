@@ -1,0 +1,16 @@
+{
+  "engine": "classical",
+  "applied_stages": [
+    "object_removal",
+    "color",
+    "sharpen"
+  ],
+  "skipped_stages": {},
+  "overlap_statistics": null,
+  "object_removal": {
+    "method": "texture_clone",
+    "regions": 2,
+    "mask_fraction": 0.010630708333333334,
+    "automatic_detection": false
+  }
+}

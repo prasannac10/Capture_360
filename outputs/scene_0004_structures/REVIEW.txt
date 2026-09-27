@@ -1,0 +1,1 @@
+Rejected visual trial: structure ownership improved some interiors but introduced steps at region boundaries. Source-region overrides remain empty. Do not use as the final output.

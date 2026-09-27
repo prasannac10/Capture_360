@@ -129,7 +129,7 @@ def stitch_perspective_files(image_paths, output_path, output_size):
     return panorama
 
 
-def stitch_files(image_paths, output_path, output_size, profile):
+def stitch_files(image_paths, output_path, output_size, profile, poses_path=None, pose_options=None):
     """Run the appropriate complete classical OpenCV panorama pipeline.
 
     For phone/pinhole captures, OpenCV's panorama implementation is used
@@ -139,6 +139,9 @@ def stitch_files(image_paths, output_path, output_size, profile):
     The explicit raw pipeline remains available for controlled planar inputs.
     """
     if profile["projection"] == "pinhole":
+        if poses_path is not None:
+            from .pose_stitcher import stitch_pose_files
+            return stitch_pose_files(image_paths, output_path, output_size, poses_path, pose_options)
         return stitch_perspective_files(image_paths, output_path, output_size)
     if profile["projection"] == "fisheye_180":
         return stitch_fisheye_files(
