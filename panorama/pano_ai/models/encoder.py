@@ -19,6 +19,8 @@ class ImageEncoder(nn.Module):
             nn.Conv2d(128, dim, 1, bias=False), nn.BatchNorm2d(dim), nn.GELU()
         )
         self.feature_stride = 8
+        self.register_buffer('input_mean', torch.tensor([.485, .456, .406]).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer('input_std', torch.tensor([.229, .224, .225]).view(1, 3, 1, 1), persistent=False)
 
     def forward(self, x):
-        return self.projection(self.backbone(x))
+        return self.projection(self.backbone((x - self.input_mean) / self.input_std))

@@ -26,10 +26,10 @@ class SceneOptionTests(unittest.TestCase):
 
     def test_reviewed_scene_settings_are_forwarded(self):
         options = self.run_scene('scene_0004')
-        self.assertEqual(options['seam_width'], 2048)
-        self.assertEqual(options['blend_bands'], 3)
+        self.assertEqual(options['seam_width'], 1024)
+        self.assertEqual(options['blend_bands'], 5)
         self.assertFalse(options['local_alignment'])
-        self.assertEqual(options['source_regions'], [])
+        self.assertEqual(options['source_regions'][0]['source'], 'nadir')
 
     def test_other_scene_keeps_defaults(self):
         options = self.run_scene('scene_0005')

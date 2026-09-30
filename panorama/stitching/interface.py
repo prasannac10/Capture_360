@@ -24,8 +24,10 @@ def _classical(args: argparse.Namespace) -> None:
     if not args.poses:
         parents = {Path(path).resolve().parent for path in image_paths}
         if len(parents) == 1:
-            candidate = next(iter(parents)) / "ar_poses.jsonl"
-            if candidate.is_file():
+            parent = next(iter(parents))
+            candidate = next((p for p in (parent / 'capture.json', parent.parent / 'capture.json', parent / 'ar_poses.jsonl')
+                              if p.is_file()), None)
+            if candidate is not None:
                 args.poses = str(candidate)
                 print(f"Using capture poses: {candidate}")
     if args.poses:

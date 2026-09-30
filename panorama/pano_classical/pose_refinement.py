@@ -12,6 +12,12 @@ LOGGER = logging.getLogger(__name__)
 
 
 def pixel_rays(points, record):
+    if record.get('projection') == 'fisheye_180':
+        xy = np.column_stack(((points[:, 0] - record['cx']) / record['fx'],
+                              -(points[:, 1] - record['cy']) / record['fy']))
+        theta = np.linalg.norm(xy, axis=1)
+        scale = np.sinc(theta / np.pi)
+        return np.column_stack((xy * scale[:, None], -np.cos(theta)))
     rays = np.column_stack(((points[:, 0] - record['cx']) / record['fx'],
                             -(points[:, 1] - record['cy']) / record['fy'],
                             -np.ones(len(points))))

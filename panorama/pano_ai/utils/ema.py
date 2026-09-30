@@ -9,7 +9,10 @@ class EMA:
 
     def update(self, model):
         for k, v in model.state_dict().items():
-            self.shadow[k] = self.decay * self.shadow[k] + (1 - self.decay) * v.detach()
+            if v.is_floating_point():
+                self.shadow[k] = self.decay * self.shadow[k] + (1 - self.decay) * v.detach()
+            else:
+                self.shadow[k] = v.detach().clone()
 
     def copy_to(self, model):
         self.backup = {k: v.detach().clone() for k, v in model.state_dict().items()}

@@ -48,19 +48,26 @@ class PanoramaModel(nn.Module):
         c[..., 2:4] /= s
         c[..., 5] /= 180.0
         r = rot.view(1, 1, 3, 3).expand(1, xy.shape[1], 3, 3)
-        return self.metadata(xy, wh, image, c, r)
+        return self.metadata(xy, wh, image, c, r)[0]
 
     def forward_scene(
         self, batch_factory, image_size, camera_params, poses, tile_batch_size=4
     ):
         """batch_factory() must yield (frame_index, tiles[K,3,H,W], xy[K,2], wh[K,2]). It is called twice."""
         dev = next(self.parameters()).device
+        if tile_batch_size <= 0:
+            raise ValueError('tile_batch_size must be positive')
+        rotations = poses.to(dev)
+        if rotations.ndim == 2:
+            rotations = ypr_to_rot(rotations)
+        if rotations.shape != (len(image_size), 3, 3):
+            raise ValueError('poses must be [N,3] angles or [N,3,3] camera-to-world rotations')
         tokens = []
         count = 0
         for fi, tiles, xy, wh in batch_factory():
             for st in range(0, tiles.shape[0], tile_batch_size):
                 x = tiles[st : st + tile_batch_size].to(dev)
-                rot = ypr_to_rot(poses[fi : fi + 1].to(dev))
+                rot = rotations[fi : fi + 1]
                 feat = self.encoder(x)
                 tokens.append(
                     feat.mean((-1, -2))
@@ -87,11 +94,11 @@ class PanoramaModel(nn.Module):
         weight = torch.zeros(1, 1, *self.pano_feature_size, device=dev)
         cursor = 0
         for fi, tiles, xy, wh in batch_factory():
-            rot = ypr_to_rot(poses[fi : fi + 1].to(dev))
+            rot = rotations[fi : fi + 1]
             for st in range(0, tiles.shape[0], tile_batch_size):
                 en = min(st + tile_batch_size, tiles.shape[0])
                 x = tiles[st:en].to(dev)
-                feat = self.encoder(x).unsqueeze(0)
+                feat = self.encoder(x).unsqueeze(0).unsqueeze(0)
                 k = en - st
                 feat = feat * gate[cursor : cursor + k].view(
                     1, 1, k, self.feature_dim, 1, 1
@@ -110,5 +117,7 @@ class PanoramaModel(nn.Module):
                 weight += pw
                 cursor += k
         spherical = sph / weight.clamp_min(1e-6)
-        spherical *= self.condition(scene).view(1, self.feature_dim, 1, 1)
+        if cursor != count:
+            raise ValueError('Tile factory must yield the same tiles on both passes')
+        spherical = spherical * self.condition(scene).view(1, self.feature_dim, 1, 1)
         return self.decoder(spherical)

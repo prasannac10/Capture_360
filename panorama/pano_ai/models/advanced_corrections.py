@@ -178,7 +178,7 @@ class OverlapDetectionUNet(nn.Module):
 
         # Fusion and classification
         self.classifier = nn.Sequential(
-            nn.Linear(c3 * 2, 256),
+            nn.Linear(c3 * 3, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
             nn.Linear(256, 128),
@@ -303,7 +303,7 @@ class ParallaxCorrectionDetector(nn.Module):
 
         d1 = self.decoder[2](torch.cat([self.decoder[1](d2), e2], dim=1))
 
-        flow = self.head(d1)
+        flow = self.head(F.interpolate(d1, size=img1.shape[-2:], mode='bilinear', align_corners=False))
 
         # Mask out non-overlap regions
         if overlap_mask is not None:

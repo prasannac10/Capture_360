@@ -49,8 +49,11 @@ def stitch(
         from panorama.pano_classical.opencv_stitcher import stitch_files
         from panorama.pano_classical.corrections import ClassicalCorrectionPipeline
 
+        capture = None
         if isinstance(inputs, (str, Path)):
-            raise TypeError("Classical stitching requires an iterable of image paths")
+            from .capture import load_capture
+            capture = load_capture(inputs)
+            inputs = [capture.image_path(frame) for frame in capture.frames]
         requested_output = Path(output_path)
         # The CLI documents an output directory, but accepting a filename is
         # friendlier for direct command-line use.  Intermediate raw/metadata
@@ -63,6 +66,11 @@ def stitch(
                 "Remove or rename that directory, then rerun."
             )
         output_dir.mkdir(parents=True, exist_ok=True)
+        if capture is not None:
+            contract = output_dir / 'capture.json'
+            capture.save(contract)
+            original_poses = capture.root / 'ar_poses.jsonl'
+            kwargs.setdefault('poses_path', original_poses if original_poses.exists() else contract)
         image_paths = [Path(image) for image in inputs]
         dimensions = []
         for image in image_paths:
@@ -79,8 +87,6 @@ def stitch(
             config["input"],
             profile,
         )
-        if kwargs.get("poses_path") and selected_profile["projection"] != "pinhole":
-            raise ValueError("ARCore poses require a pinhole capture profile")
         if (
             not selected_profile["min_frames"]
             <= len(dimensions)
@@ -114,12 +120,22 @@ def stitch(
             pose_options=pose_options,
             **kwargs,
         )
+        from .defects import load_defect_masks, union_masks, save_defect_masks
+        scene_folder = source_folder.parent if source_folder and source_folder.name == 'images' else source_folder
+        coverage_path = output_dir / 'raw_classical_panorama_coverage.png'
+        coverage = cv2.imread(str(coverage_path), cv2.IMREAD_GRAYSCALE) if coverage_path.exists() else None
+        defects = load_defect_masks(scene_folder, panorama.shape[:2], coverage) if scene_folder else {}
+        stage_masks = {key: defects[label] for key, label in (('glare', 'glare'), ('dots', 'lens_dots')) if label in defects}
+        repair_mask = union_masks(defects, ('missing_coverage', 'photographer', 'other'))
         corrected, metadata = ClassicalCorrectionPipeline(config).run(
             panorama,
             [],
             output_dir=output_dir,
             scene_name=scene_name,
+            correction_mask=repair_mask,
+            defect_masks=stage_masks,
         )
+        metadata['defects'] = save_defect_masks(output_dir, defects)
         if kwargs.get("poses_path"):
             geometry_path = output_dir / "raw_classical_panorama_geometry.json"
             metadata["stitching"] = json.loads(geometry_path.read_text(encoding="utf-8"))

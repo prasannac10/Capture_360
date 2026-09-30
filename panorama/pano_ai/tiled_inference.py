@@ -9,15 +9,8 @@ import yaml
 from PIL import Image
 from panorama.stitching.profiles import validate_frame_set
 from .data.tile_dataset import VariableTilePanoramaDataset, iter_tile_batches
-from .highres_correction import HighResolutionCorrectionPipeline
+from .highres_correction import HighResolutionCorrectionPipeline, validate_mask
 from .models.panorama_model import PanoramaModel
-
-
-def _pole_mask(height, width):
-    mask = np.zeros((height, width), dtype=np.float32)
-    band = max(1, height // 20)
-    mask[:band] = mask[-band:] = 1.0
-    return mask
 
 
 def run_tiled_inference(
@@ -25,11 +18,29 @@ def run_tiled_inference(
 ):
     config_path = Path(config_path).resolve()
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    mode = config.get('ai_pipeline', {}).get('mode', 'tiled_neural')
+    if mode == 'source_preserving':
+        if checkpoint is not None:
+            raise ValueError('A panorama checkpoint is for tiled_neural mode; source_preserving uses per-task checkpoints')
+        from .source_inference import run_source_inference
+        return run_source_inference(scene, config, config_path, output_dir, profile)
+    if mode != 'tiled_neural':
+        raise ValueError('Unknown ai_pipeline mode')
     model_cfg, inference_cfg = config["model"], config["inference"]
     device, scene = (
         torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         Path(scene).resolve(),
     )
+    correction_pipeline = HighResolutionCorrectionPipeline(config, config_path, device)
+    shape = (model_cfg['output_height'], model_cfg['output_width'])
+    from panorama.stitching.defects import load_defect_masks, union_masks, save_defect_masks
+    defects = load_defect_masks(scene, shape)
+    correction_mask = union_masks(defects, ('missing_coverage', 'photographer', 'other'))
+    auxiliary = {'ghost_mask': defects.get('moving_objects')}
+    if 'nadir_zenith' in correction_pipeline.models:
+        validate_mask(correction_mask, shape)
+    if 'ghost_removal' in correction_pipeline.models:
+        validate_mask(auxiliary.get('ghost_mask'), shape)
     dataset = VariableTilePanoramaDataset(
         scene.parent,
         False,
@@ -37,6 +48,7 @@ def run_tiled_inference(
         model_cfg["tile_overlap"],
         config["input"]["min_frames"],
         config["input"]["max_frames"],
+        input_config=config['input'], profile=profile,
     )
     sample = dataset[
         next(
@@ -63,18 +75,21 @@ def run_tiled_inference(
     state = torch.load(
         checkpoint_path.resolve(), map_location=device, weights_only=False
     )
+    if state.get('contract') != 'panorama_pixel_centres_v2' and not inference_cfg.get('allow_legacy_checkpoint', False):
+        raise ValueError('Checkpoint predates corrected projection/normalization. Retrain, or explicitly set inference.allow_legacy_checkpoint for comparison only.')
     model = PanoramaModel(
         model_cfg["feature_dim"],
         (model_cfg["pano_feature_height"], model_cfg["pano_feature_width"]),
         (model_cfg["output_height"], model_cfg["output_width"]),
         model_cfg["tile_size"],
         model_cfg["encoder"]["backbone"],
-        model_cfg["encoder"]["pretrained"],
+        False,  # A complete checkpoint supplies all encoder weights; no download.
         model_cfg["attention"]["heads"],
         model_cfg["attention"].get("layers", 2),
         inference_cfg.get("output_tile", 1024),
     ).to(device)
-    model.load_state_dict(state.get("model", state), strict=True)
+    weights = state.get('ema') if isinstance(state, dict) and inference_cfg.get('use_ema', True) else None
+    model.load_state_dict(weights if weights is not None else state.get("model", state), strict=True)
     model.eval()
     batch_size = int(inference_cfg.get("tile_batch_size", 4))
     with torch.inference_mode():
@@ -101,20 +116,14 @@ def run_tiled_inference(
     Image.fromarray(initial).save(
         output / "initial_panorama.tiff", compression="tiff_deflate"
     )
-    mask_path = scene / "correction_mask.png"
-    correction_mask = (
-        np.asarray(Image.open(mask_path).convert("L"), dtype=np.float32) / 255
-        if mask_path.exists()
-        else _pole_mask(*initial.shape[:2])
-    )
-    corrected, corrections = HighResolutionCorrectionPipeline(
-        config, config_path, device
-    ).run(
+    corrected, corrections = correction_pipeline.run(
         initial,
         correction_mask,
         model_cfg["tile_size"],
         model_cfg["tile_overlap"],
         output_dir=output,
+        auxiliary=auxiliary,
+        defect_masks=defects,
     )
     Image.fromarray(corrected).save(output / "final_corrected_panorama.png")
     Image.fromarray(corrected).save(output / "final_panorama.png")
@@ -131,8 +140,10 @@ def run_tiled_inference(
         "tile_overlap": model_cfg["tile_overlap"],
         "output_resolution": [model_cfg["output_width"], model_cfg["output_height"]],
         "checkpoint": str(checkpoint_path),
+        "weights": 'ema' if weights is not None else 'model',
         "device": str(device),
         "corrections": corrections,
+        "defects": save_defect_masks(output, defects),
     }
     (output / "metadata.json").write_text(
         json.dumps(metadata, indent=2), encoding="utf-8"
@@ -150,7 +161,7 @@ def main():
     parser.add_argument(
         "--profile",
         default="auto",
-        choices=["auto", "dslr_fisheye", "drone_still", "mobile", "mobile_landscape"],
+        choices=["auto", "dslr_fisheye", "drone_still", "mobile", "mobile_square", "mobile_landscape"],
     )
     args = parser.parse_args()
     run_tiled_inference(

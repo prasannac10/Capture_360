@@ -6,13 +6,13 @@ import torch.nn.functional as F
 
 
 def equirect_dirs(h, w, device, dtype):
-    lon = torch.linspace(-math.pi, math.pi, w, device=device, dtype=dtype)
-    lat = torch.linspace(math.pi / 2, -math.pi / 2, h, device=device, dtype=dtype)
+    lon = ((torch.arange(w, device=device, dtype=dtype) + .5) / w - .5) * (2 * math.pi)
+    lat = (.5 - (torch.arange(h, device=device, dtype=dtype) + .5) / h) * math.pi
     lat, lon = torch.meshgrid(lat, lon, indexing="ij")
     return torch.stack(
         (
             torch.cos(lat) * torch.sin(lon),
-            torch.sin(lat),
+            -torch.sin(lat),
             torch.cos(lat) * torch.cos(lon),
         ),
         -1,
@@ -37,6 +37,17 @@ def ypr_to_rot(ypr):
 
 
 def project_tile_features(
+    tile_features, tile_xy, tile_wh, image_size, camera_params, rotations,
+    pano_h, pano_w, feature_stride=8,
+):
+    # Half precision cannot represent all native pixel coordinates above 2048.
+    with torch.autocast(device_type=tile_features.device.type, enabled=False):
+        return _project_tile_features(
+            tile_features.float(), tile_xy.float(), tile_wh.float(), image_size.float(),
+            camera_params.float(), rotations.float(), pano_h, pano_w, feature_stride)
+
+
+def _project_tile_features(
     tile_features,
     tile_xy,
     tile_wh,
@@ -88,8 +99,9 @@ def project_tile_features(
         y0 = tile_xy[:, :, i, 1].view(b, n, 1, 1)
         x1 = x0 + tile_wh[:, :, i, 0].view(b, n, 1, 1)
         y1 = y0 + tile_wh[:, :, i, 1].view(b, n, 1, 1)
-        gx = 2 * (u - x0) / (tw - 1) - 1
-        gy = 2 * (v - y0) / (th - 1) - 1
+        # Stride-8 ResNet features are centred at source pixels 0,8,16,... .
+        gx = 2 * (u - x0) / max(feature_stride * (wf - 1), 1) - 1
+        gy = 2 * (v - y0) / max(feature_stride * (hf - 1), 1) - 1
         grid = torch.stack((gx, gy), -1).reshape(b * n, pano_h, pano_w, 2)
         fti = tile_features[:, :, i].reshape(b * n, c, hf, wf)
         samp = F.grid_sample(

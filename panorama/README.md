@@ -1,81 +1,53 @@
 # Capture360 panorama generation
 
-This directory separates Capture360's panorama implementations:
+Capture360 provides classical panorama stitching and an AI path that uses
+geometric stitching with optional learned correction. Start with the geometric
+baseline; enable learned models after validating their checkpoints on real
+mobile captures.
 
-- `pano_ai/` contains trained models, datasets, training, AI inference, and AI corrections.
-- `pano_classical/` contains OpenCV and Hugin stitching/correction code.
-- `stitching/` owns the shared configuration and dispatches calls to the selected engine.
+## Project layout
 
-## Input contract
+| Directory | Purpose |
+| --- | --- |
+| `pano_classical/` | OpenCV/Hugin stitching, calibrated spherical composition and classical corrections |
+| `pano_ai/` | AI models, data preparation, training, inference and learned corrections |
+| `stitching/` | Shared configuration, camera-data contract and engine dispatch |
 
-The shared `stitching/config.yaml` selects the input profile automatically from
-the frame dimensions (or set `input.profile` explicitly):
+## Pipeline
 
-| Profile | Supported frames | Projection |
-| --- | --- | --- |
-| `dslr_fisheye` | 9504x6336, 4–8 images | 180-degree fisheye |
-| `mobile_landscape` | 1920x1080, 20–60 images | landscape phone/pinhole |
-| `drone_still` | 4096x3072, 20–30 images | pinhole/perspective |
-| `mobile` | portrait images at least 3000x4000, 20–30 images | pinhole/perspective |
+The recommended AI mode, `source_preserving`, projects calibrated source images,
+compensates exposure and blends seams. Optional learned view refinement retains
+the geometric result when proposals fail reliability checks. A trained combined
+correction model can then process the panorama in overlapping tiles.
 
-For AI sessions, `camera.json` must declare `fisheye_180` (or an equivalent
-fisheye name) for DSLR captures, and `pinhole`/`perspective`/`phone` for drone
-and mobile captures. This is validated before inference.
+The `tiled_neural` panorama decoder is a separate experimental route. Training
+the combined correction model does not train that decoder or the optional
+alignment and blending heads.
 
-Each training/inference scene contains:
+Input profiles and stage toggles live in [stitching/config.yaml](stitching/config.yaml).
+Calibrated paths share per-frame intrinsics, rotations, dimensions and filenames
+through `capture.json` or supported pose adapters. Current composition uses
+rotation-only geometry; translation and depth metadata do not imply depth fusion.
 
-```text
-scene_xxxxxx/
-  images/        # native JPG/PNG/TIFF frames
-  poses.pt       # [N,3] yaw/pitch/roll degrees
-  camera.json    # projection + calibrated intrinsics/FOV
-  panorama.png   # required for supervised training
-```
+## Training and documentation
 
-Supported source ranges include DSLR fisheye 9504x6336, drone still 4096x3072, and mobile stills from 3000x4000 through 6120x8160. Valid frame count is 4–30; typical fisheye capture is 4–8 frames and pinhole capture is 20–30.
+Use the [AI data preparation and training guide](pano_ai/README.md) for dependency
+installation, commands, synthetic smoke tests, mobile validation and AWS/S3 setup.
+The recommended first training task is `combined`, using reviewed, aligned
+PTGui-before / corrected-after panoramas. This task does not require separate
+per-stage labels or defect masks. Calibrated mobile inference needs source frames
+and camera metadata, but no corrected reference panorama.
 
-## Variable-resolution architecture
-
-```text
-native frames
- -> 1024x1024 overlapping tiles
- -> shared ResNet18 stride-8 encoder
- -> tile + camera + pose metadata
- -> arbitrary-N tile attention
- -> camera-aware spherical projection
- -> memory-bounded 12K x 6K decoder
- -> correction stages
- -> final panorama
-```
-
-The complete source frame is never resized to 224x224. Tiles are loaded lazily and processed in configurable chunks. The model makes two encoder passes: the first builds the global tile-attention context; the second immediately projects spatial features into the panorama canvas. This trades extra encoder compute for bounded feature memory.
-
-## Training
-
-From the repository root:
-
-```bash
-python -m panorama.pano_ai.train_tiled --config ../stitching/config.yaml
-```
-
-Training uses the native-resolution tiled path, supervised ground truth, validation scenes when available, mixed precision on CUDA, gradient clipping and optional EMA. The default training target is 3000x1500; production inference is 12000x6000.
-
-## Inference
-
-```bash
-python -m panorama.pano_ai.tiled_inference --scene data/test/scene_000001 --config ../stitching/config.yaml
-```
-
-Outputs include `initial_panorama.png`, `initial_panorama.tiff`, `final_corrected_panorama.png`, `final_corrected_panorama.tiff`, and `metadata.json`.
-
-Learned correction stages require their trained checkpoints. Baseline and single-image
-advanced corrections (parallax and ghost removal) run in the tiled AI correction
-pipeline. Pairwise AI stages (seam blending, overlap detection, and parallax flow)
-remain disabled until their panorama-aligned reference/mask data contract and tiled
-implementation are supplied. Classical lens-dot removal and sharpening remain enabled.
+See the [architecture block diagrams](ARCHITECTURE_VARIABLE_TILED.md) for training,
+inference, the correction U-Net and the experimental decoder.
 
 ## Validation status
 
-The code path has been structurally updated for variable-resolution training and inference. Actual customer-dataset GPU execution, quality benchmarking, calibration validation and peak-memory measurements are still required before treating the model as production-ready.
+Synthetic smoke tests check execution and data contracts. Production activation
+still requires held-out real mobile evaluation, full-panorama visual review and
+GPU resource checks. Combined correction can change any pixel and must be enabled
+alone among post-blend correction stages.
 
-The legacy 224x224 ONNX export path is intentionally not advertised for this native tiled architecture; deployment export will be implemented after the Python reference contract is validated.
+The geometric compositor currently works at at most 4096 pixels wide and enlarges
+larger requested outputs. A 12000x6000 output therefore does not establish native
+12K detail or recovery of missing surfaces.

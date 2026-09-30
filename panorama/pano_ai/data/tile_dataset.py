@@ -9,44 +9,6 @@ from torch.utils.data import Dataset
 from .tiling import tile_specs
 
 
-def _camera(scene, w, h):
-    p = scene / "camera.json"
-    d = (
-        json.loads(p.read_text())
-        if p.exists()
-        else {"projection": "fisheye_180", "fov_deg": 180.0}
-    )
-    typ = (
-        str(d.get("projection", d.get("model", "fisheye_180")))
-        .lower()
-        .replace("-", "_")
-    )
-    if typ in {"fisheye", "fisheye_180", "equidistant", "180_degree_equidistant"}:
-        fov = float(d.get("fov_deg", d.get("horizontal_fov_deg", 180.0)))
-        fr = math.radians(fov)
-        f = min(w, h) / fr
-        return torch.tensor(
-            [
-                float(d.get("fx", f)),
-                float(d.get("fy", f)),
-                float(d.get("cx", w / 2)),
-                float(d.get("cy", h / 2)),
-                0.0,
-                fov,
-            ]
-        )
-    if all(k in d for k in ("fx", "fy", "cx", "cy")):
-        vals = [float(d[k]) for k in ("fx", "fy", "cx", "cy")]
-    elif "horizontal_fov_deg" in d:
-        hf = math.radians(float(d["horizontal_fov_deg"]))
-        fx = w / (2 * math.tan(hf / 2))
-        vf = 2 * math.atan((h / w) * math.tan(hf / 2))
-        vals = [fx, h / (2 * math.tan(vf / 2)), w / 2, h / 2]
-    else:
-        raise ValueError(f"{p} needs calibrated intrinsics or horizontal_fov_deg")
-    return torch.tensor(vals + [1.0, 0.0])
-
-
 class VariableTilePanoramaDataset(Dataset):
     def __init__(
         self,
@@ -57,6 +19,8 @@ class VariableTilePanoramaDataset(Dataset):
         min_frames=4,
         max_frames=30,
         max_tiles_per_frame=None,
+        input_config=None,
+        profile='auto',
     ):
         self.root = Path(root)
         self.has_gt = has_gt
@@ -65,10 +29,11 @@ class VariableTilePanoramaDataset(Dataset):
         self.min_frames = min_frames
         self.max_frames = max_frames
         self.max_tiles_per_frame = max_tiles_per_frame
+        self.input_config, self.profile = input_config, profile
         if not self.root.exists():
             raise FileNotFoundError(self.root)
         self.scenes = sorted(
-            p for p in self.root.iterdir() if p.is_dir() and (p / "images").is_dir()
+            p for p in self.root.iterdir() if p.is_dir() and ((p / "images").is_dir() or (p / 'capture.json').is_file())
         )
         if not self.scenes:
             raise RuntimeError(f"No scenes under {self.root}")
@@ -78,49 +43,46 @@ class VariableTilePanoramaDataset(Dataset):
 
     def __getitem__(self, idx):
         scene = self.scenes[idx]
-        files = sorted(
-            p
-            for p in (scene / "images").iterdir()
-            if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
-        )
+        from panorama.stitching.capture import load_capture, CV_BASIS
+        capture = load_capture(scene)
+        files = [capture.image_path(frame) for frame in capture.frames]
         n = len(files)
-        if not self.min_frames <= n <= self.max_frames:
-            raise ValueError(
-                f"{scene}: expected {self.min_frames}..{self.max_frames}, got {n}"
-            )
-        pp = scene / "poses.pt"
-        if not pp.exists():
-            raise FileNotFoundError(pp)
-        poses = torch.load(pp, map_location="cpu", weights_only=False)
-        poses = next(
-            (
-                poses[k]
-                for k in ("poses", "ypr", "rotations")
-                if isinstance(poses, dict) and k in poses
-            ),
-            poses,
-        )
-        poses = torch.as_tensor(poses, dtype=torch.float32)
-        if poses.shape != (n, 3):
-            raise ValueError(f"{scene}: poses must be [N,3], got {tuple(poses.shape)}")
-        sizes = []
-        cams = []
-        specs = []
-        for p in files:
-            with Image.open(p) as im:
-                w, h = im.size
+        if self.input_config is None and not self.min_frames <= n <= self.max_frames:
+            raise ValueError(f'{scene}: expected {self.min_frames}..{self.max_frames}, got {n}')
+        sizes, cams, specs = [], [], []
+        rotations, translations, depths = [], [], []
+        for p, frame in zip(files, capture.frames):
+            with Image.open(p) as image:
+                w, h = image.size
+            if (w, h) != (frame.width, frame.height):
+                raise ValueError(f'{p}: pixels must match calibration dimensions')
             ss = tile_specs(h, w, self.tile_size, self.overlap)
             if self.max_tiles_per_frame and len(ss) > self.max_tiles_per_frame:
-                raise ValueError(f"{p}: {len(ss)} tiles exceeds limit")
+                raise ValueError(f'{p}: tile limit exceeded')
             sizes.append([w, h])
-            cams.append(_camera(scene, w, h))
+            cams.append(torch.tensor(frame.intrinsics + [1. if frame.projection == 'pinhole' else 0., frame.fov_degrees]))
+            rotations.append(CV_BASIS @ np.asarray(frame.rotation) @ CV_BASIS)
+            translations.append(CV_BASIS @ np.asarray(frame.translation))
+            depths.append(dict(frame.depth, path=str(capture.root / frame.depth['path'])) if frame.depth else None)
             specs.append([(s.x, s.y, s.width, s.height) for s in ss])
+        poses = torch.tensor(np.array(rotations), dtype=torch.float32)
+        if self.input_config is not None:
+            from panorama.stitching.profiles import validate_frame_set
+            name, selected = validate_frame_set(sizes, self.input_config, self.profile)
+            if not selected['min_frames'] <= n <= selected['max_frames']:
+                raise ValueError(f'{name}: frame count {n} is outside its configured limits')
+            expected = 0 if selected['projection'] == 'fisheye_180' else 1
+            if any(float(cam[4]) != expected for cam in cams):
+                raise ValueError(f'{name}: projection does not match profile')
         out = {
             "frame_paths": [str(p) for p in files],
             "tile_specs": specs,
             "image_size": torch.tensor(sizes, dtype=torch.float32),
             "camera_params": torch.stack(cams),
             "poses": poses,
+            "translations": torch.tensor(np.array(translations), dtype=torch.float32),
+            "depth": depths,
+            "capture": capture,
             "scene": scene.name,
         }
         if self.has_gt:
@@ -129,7 +91,7 @@ class VariableTilePanoramaDataset(Dataset):
                 raise FileNotFoundError(gp)
             with Image.open(gp) as im:
                 out["gt_panorama"] = (
-                    torch.from_numpy(np.asarray(im.convert("RGB")))
+                    torch.from_numpy(np.array(im.convert("RGB"), copy=True))
                     .permute(2, 0, 1)
                     .float()
                     / 255.0
@@ -154,7 +116,7 @@ def iter_tile_batches(sample, tile_size=1024, overlap=128, batch_size=4):
                         arr = np.pad(arr, ((0, ph), (0, pw), (0, 0)), mode=mode)
                         crop = Image.fromarray(arr)
                     tiles.append(
-                        torch.from_numpy(np.asarray(crop)).permute(2, 0, 1).float()
+                        torch.from_numpy(np.array(crop, copy=True)).permute(2, 0, 1).float()
                         / 255.0
                     )
             yield fi, torch.stack(tiles), torch.tensor(

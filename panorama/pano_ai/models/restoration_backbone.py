@@ -38,6 +38,7 @@ class RestorationUNet(nn.Module):
     ):
         super().__init__()
         total_in = in_channels + mask_channels
+        self.mask_channels = mask_channels
         c1, c2, c3 = base_channels, base_channels * 2, base_channels * 4
         self.enc1 = ConvBlock(total_in, c1)
         self.enc2 = ConvBlock(c1, c2)
@@ -58,6 +59,9 @@ class RestorationUNet(nn.Module):
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
+        if self.mask_channels and mask is None:
+            raise ValueError('This restoration model requires an explicit mask')
+        rgb = x[:, :3]
         if mask is not None:
             if mask.ndim == 3:
                 mask = mask.unsqueeze(1)
@@ -70,4 +74,6 @@ class RestorationUNet(nn.Module):
         d2 = self.dec2(torch.cat([self._up(d3, e2), e2], dim=1))
         d1 = self.dec1(torch.cat([self._up(d2, e1), e1], dim=1))
         residual = self.head(d1)
-        return torch.clamp(x[:, :3] + residual, 0.0, 1.0)
+        if mask is not None:
+            residual = residual * (mask > 0).to(dtype=residual.dtype)
+        return torch.clamp(rgb + residual, 0.0, 1.0)

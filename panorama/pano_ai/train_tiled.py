@@ -12,25 +12,18 @@ from .data.tile_dataset import (
 )
 from .models.panorama_model import PanoramaModel
 from .utils.ema import EMA
+from .train.panorama_loss import PanoramaLoss
 from panorama.stitching.profiles import validate_frame_set
 
 
 def run_scene(
-    model, sample, device, tile_batch_size, train, optimizer=None, scaler=None
+    model, sample, device, tile_batch_size, train, optimizer=None, scaler=None, criterion=None, ema=None
 ):
-    def factory():
-        return iter_tile_batches(
-            sample,
-            model.encoder.feature_stride * 128,
-            model.encoder.feature_stride * 16,
-            tile_batch_size,
-        )
-
     # tile_size/overlap are supplied by caller through model attributes in the closure below.
     if train:
         optimizer.zero_grad(set_to_none=True)
     ctx = torch.enable_grad() if train else torch.no_grad()
-    with ctx:
+    with ctx, torch.autocast(device_type=device.type, enabled=bool(scaler and scaler.is_enabled())):
         pred = model.forward_scene(
             lambda: iter_tile_batches(
                 sample, sample["_tile_size"], sample["_overlap"], tile_batch_size
@@ -44,31 +37,41 @@ def run_scene(
         gt = F.interpolate(
             gt, (pred.shape[-2], pred.shape[-1]), mode="bilinear", align_corners=False
         )
-        loss = F.l1_loss(pred, gt)
+        loss = criterion(pred, gt) if criterion is not None else F.l1_loss(pred, gt)
+        if not torch.isfinite(loss):
+            raise ValueError('Non-finite panorama training loss')
         if train:
             if scaler and scaler.is_enabled():
+                old_scale = scaler.get_scale()
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 scaler.step(optimizer)
                 scaler.update()
+                stepped = scaler.get_scale() >= old_scale
             else:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 optimizer.step()
+                stepped = True
+            if ema is not None and stepped:
+                ema.update(model)
     return float(loss.detach().item())
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="../stitching/config.yaml")
     p.add_argument("--epochs", type=int)
-    a = p.parse_args()
+    a = p.parse_args(argv)
     root = Path(__file__).resolve().parent
     cfg = yaml.safe_load((root / a.config).read_text())
     m = cfg["model"]
     tr = cfg["training"]
+    if tr.get('mode', 'supervised') != 'supervised':
+        raise NotImplementedError('The panorama trainer currently supports supervised mode only')
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    criterion = PanoramaLoss(cfg.get('loss', {})).to(dev)
     tile_bs = int(
         tr.get("tile_batch_size", cfg.get("inference", {}).get("tile_batch_size", 4))
     )
@@ -80,6 +83,7 @@ def main():
         cfg["input"]["min_frames"],
         cfg["input"]["max_frames"],
         tr.get("max_tiles_per_frame"),
+        input_config=cfg['input'],
     )
     val = (
         VariableTilePanoramaDataset(
@@ -90,6 +94,7 @@ def main():
             cfg["input"]["min_frames"],
             cfg["input"]["max_frames"],
             tr.get("max_tiles_per_frame"),
+            input_config=cfg['input'],
         )
         if tr.get("val_data") and (root / tr["val_data"]).exists()
         else None
@@ -105,6 +110,7 @@ def main():
         m["attention"].get("layers", 2),
         tr.get("decoder_output_tile", 1024),
     ).to(dev)
+    initial_parameter = next(model.parameters()).detach().clone()
     opt = torch.optim.AdamW(
         model.parameters(), lr=tr["lr"], weight_decay=tr["weight_decay"]
     )
@@ -144,16 +150,15 @@ def main():
     for ep in range(1, epochs + 1):
         model.train()
         tl = sum(
-            run_scene(model, prep(train[i]), dev, tile_bs, True, opt, scaler)
+            run_scene(model, prep(train[i]), dev, tile_bs, True, opt, scaler, criterion, ema)
             for i in torch.randperm(len(train)).tolist()
         ) / max(1, len(train))
         if ema:
-            ema.update(model)
             ema.copy_to(model)
         model.eval()
         vl = (
             sum(
-                run_scene(model, prep(val[i]), dev, tile_bs, False)
+                run_scene(model, prep(val[i]), dev, tile_bs, False, criterion=criterion)
                 for i in range(len(val))
             )
             / max(1, len(val))
@@ -163,6 +168,9 @@ def main():
         if ema:
             ema.restore(model)
         state = {
+            "parameter_change_l1": float((next(model.parameters()).detach() - initial_parameter).abs().sum()),
+            "contract": "panorama_pixel_centres_v2",
+            "task": "panorama",
             "model": model.state_dict(),
             "optimizer": opt.state_dict(),
             "epoch": ep,

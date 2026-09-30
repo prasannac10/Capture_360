@@ -34,10 +34,10 @@ class TileAttentionAggregator(nn.Module):
 class SceneToken(nn.Module):
     """Pool variable tile tokens into one global scene token without losing per-tile tokens."""
 
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, heads: int = 8):
         super().__init__()
         self.query = nn.Parameter(torch.randn(1, 1, dim) * 0.02)
-        self.attn = nn.MultiheadAttention(dim, 8, batch_first=True)
+        self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
         self.norm = nn.LayerNorm(dim)
 
     def forward(self, tokens, mask=None):

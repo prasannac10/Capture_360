@@ -149,10 +149,16 @@ can pass `source_regions` in pose options; an empty list disables the overrides.
 
 The local-flow trial on scene 0004 reduced its internal overlap error but
 introduced wavy furniture edges. It remains disabled in the checked-in config.
-Structure-pinning trials also introduced steps at polygon boundaries and are
-not enabled. Scene 0004 uses only a 2048-pixel seam canvas and three blend bands;
-other scenes retain the previous defaults. Remaining parallax and the cloned
-floor patch are not solved by these settings.
+Furniture/ceiling structure-pinning trials also introduced steps at polygon
+boundaries and are not enabled. The higher-resolution/narrower-blend trial
+also exposed tonal seams at full composition size, so the original 1024-pixel
+seam canvas and five bands are retained. Scene 0004's bottom 8% uses the dedicated `nadir` source wherever that
+frame has valid coverage, to avoid mixing shifted floor lines at the pole.
+This requires `nadir.jpg` in the capture. Other scenes retain the previous
+defaults. Remaining parallax and the cloned floor patch are not solved by
+these settings. Horizontal stretching at the bottom of a flat equirectangular
+image is projection distortion; inspect a downward perspective view to judge
+floor sharpness. Sharpening or deconvolution cannot undo this projection.
 
 Composition is capped at 4096x2048; larger configured outputs are upscaled,
 not additional native detail. Output must be 2:1. The raw output has accompanying

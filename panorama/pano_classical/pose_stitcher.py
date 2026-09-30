@@ -16,32 +16,15 @@ LOGGER = logging.getLogger(__name__)
 
 
 def load_pose_records(path):
-    records = {}
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        record = json.loads(line)
-        name = record["name"]
-        if name in records:
-            raise ValueError(f"Duplicate camera pose: {name}")
-        matrix = np.asarray(record["m"], dtype=np.float64).reshape(4, 4, order="F")
-        rotation = matrix[:3, :3]
-        if (not np.isfinite(matrix).all()
-                or not np.allclose(rotation.T @ rotation, np.eye(3), atol=0.01)
-                or not np.isclose(np.linalg.det(rotation), 1, atol=0.01)):
-            raise ValueError(f"Invalid camera rotation: {name}")
-        for key in ("fx", "fy", "w", "h"):
-            if not np.isfinite(record[key]) or record[key] <= 0:
-                raise ValueError(f"Invalid {key} for {name}")
-        if not np.isfinite([record["cx"], record["cy"]]).all():
-            raise ValueError(f"Invalid principal point for {name}")
-        records[name] = record
-    if not records:
-        raise ValueError("Pose file contains no cameras")
-    return records
+    from panorama.stitching.capture import load_capture
+    capture = load_capture(path)
+    records = [frame.classical_record() for frame in capture.frames]
+    if len({r['name'] for r in records}) != len(records):
+        raise ValueError('Classical calibrated inputs require unique filename stems')
+    return {record['name']: record for record in records}
 
 
-def stitch_pose_files(image_paths, output_path, output_size, poses_path, options=None):
+def stitch_pose_files(image_paths, output_path, output_size, poses_path, options=None, view_refiner=None):
     """Refine and seam-blend calibrated views on a 360 x 180 degree canvas.
 
     Compose at up to 4096 pixels wide to bound memory; larger requested
@@ -96,7 +79,7 @@ def stitch_pose_files(image_paths, output_path, output_size, poses_path, options
         local_alignment=options.get('local_alignment', False),
         seam_width=options.get('seam_width', 1024),
         blend_bands=options.get('blend_bands', 5),
-        source_regions=options.get('source_regions', []))
+        source_regions=options.get('source_regions', []), view_refiner=view_refiner)
     covered_fraction = float(np.mean(coverage > 0))
     if (work_w, work_h) != (width, height):
         panorama = cv2.resize(panorama, (width, height), interpolation=cv2.INTER_LANCZOS4)

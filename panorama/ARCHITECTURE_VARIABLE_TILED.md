@@ -1,80 +1,183 @@
-# Capture360 Variable-Resolution Panorama Architecture
+# Capture360 panorama architecture
 
-## Objective
+The recommended workflow uses calibrated geometric stitching followed by an
+optional trained **combined correction model**. Training starts with reviewed
+PTGui-before / corrected-after panorama pairs. The separate learned panorama
+decoder remains experimental.
 
-Generate a production 12,000 x 6,000 equirectangular panorama while preserving the native detail of:
+See [the training guide](pano_ai/README.md) for data preparation and commands.
+Diagrams below use Mermaid; open Markdown preview in a renderer with Mermaid support.
+Solid arrows carry data; dotted arrows supply configuration, weights or supervision.
 
-- DSLR fisheye: 9504 x 6336
-- Drone still: 4096 x 3072
-- Mobile still: 3000 x 4000 through 6120 x 8160
+## 1. Mobile inference: source-preserving path
 
-The model must not resize an entire source image to 224 x 224 before inference.
-
-## Architecture
-
-```text
-Variable-resolution source frames
-          |
-          v
-Original-resolution 1024x1024 tiles + 128 overlap
-          |
-          v
-Shared ResNet18 tile encoder (stride 8)
-          |
-          +---- visual feature maps
-          |
-          +---- tile tokens
-          |
-          +---- tile x/y + size
-          |
-          +---- camera intrinsics/FOV/projection
-          |
-          +---- frame pose
-          v
-Tile metadata fusion
-          |
-          v
-Multi-head attention over arbitrary N x T tiles
-          |
-          +---- per-tile contextual features
-          |
-          +---- global scene token
-          v
-Camera-aware spherical projection
-          |
-          v
-Multi-scale panorama decoder
-          |
-          v
-12,000 x 6,000 RGB panorama
-          |
-          v
-Memory-bounded high-resolution correction pipeline
-          |
-          v
-Final 12K x 6K PNG/TIFF
+```mermaid
+flowchart TD
+    images["Mobile source images"]
+    camera["Camera metadata<br/>capture.json or supported pose adapter<br/>Intrinsics, rotations, dimensions, filenames"]
+    validate["Validate frames and camera contract"]
+    project["Geometric spherical projection<br/>Rotation-only camera geometry"]
+    heads["Optional trained alignment and ownership heads"]
+    guard{"Proposal passes<br/>reliability checks?"}
+    accept["Apply accepted view refinement"]
+    fallback["Retain geometric projection<br/>and seam ownership"]
+    compose["Exposure compensation<br/>Graph-cut seams and multiband blending"]
+    initial["Initial panorama + geometric coverage"]
+    enabled{"Validated combined<br/>correction enabled?"}
+    tiles["Overlapping native RGB tiles<br/>Periodic longitude handling"]
+    correction["Combined residual U-Net"]
+    merge["Blend tile outputs<br/>into corrected panorama"]
+    weights["combined_best.pt<br/>Checked task and checkpoint contract"]
+    final["Final panorama<br/>Geometry and correction metadata"]
+    images --> validate
+    camera --> validate
+    validate --> project
+    project --> heads
+    heads --> guard
+    guard -->|Yes| accept
+    guard -->|No or heads disabled| fallback
+    accept --> compose
+    fallback --> compose
+    compose --> initial
+    initial --> enabled
+    enabled -->|Yes| tiles
+    tiles --> correction --> merge --> final
+    weights -.-> correction
+    enabled -->|No corrections enabled| final
 ```
 
-## Why tiles
+This diagram shows `ai_pipeline.mode: source_preserving` in
+[config.yaml](stitching/config.yaml), implemented by
+[source_inference.py](pano_ai/source_inference.py). Learned view heads are optional
+and disabled by default. Their gates check confidence, displacement, consistency,
+Jacobian bounds, textured overlap and photometric improvement; rejected proposals
+retain the geometric result.
 
-A 12K x 6K RGB panorama contains 216 million output values. A full-resolution fully-connected network would be impractical. Convolutional feature maps and overlapping tiles preserve local detail without requiring the whole source to exist in every GPU activation.
+The calibrated classical path shares the camera contract and geometric compositor.
+Mobile inference needs source frames and calibration/poses for this route, but
+**does not need a corrected reference panorama**. Images alone do not supply the
+camera contract automatically in this path.
 
-## Variable input count
+Combined correction must be enabled alone among post-blend correction toggles.
+The alternative separate-stage route uses explicit defect masks for masked
+repairs; combined correction takes RGB only and can change any pixel. Neither
+route includes an automatic person detector. Keep learned correction disabled
+until real mobile evaluation supports enabling it.
 
-The model accepts arbitrary valid frame counts (4-8 fisheye and 20-30 pinhole are the recommended ranges). Each frame can produce a different number of tiles. Padding/masks are used only for batching; invalid tiles never participate in attention or spherical projection.
+## 2. Data preparation, training and validation
 
-## Geometry
+```mermaid
+flowchart TD
+    pairs["Reviewed PTGui panorama<br/>+ aligned final corrected panorama"]
+    manifest["Pair manifest<br/>Physical scene ID, domain, train/val split"]
+    package["prepare_pairs<br/>Validate and copy paired images"]
+    references["Reviewed full-sphere DSLR/drone<br/>final panoramas"]
+    synth["prepare_mobile<br/>Render calibrated pinhole captures<br/>Add exposure, blur, noise and JPEG variation"]
+    stitch["Geometric stitcher creates before<br/>Clean reference supplies after"]
+    dataset["Prepared dataset<br/>restoration/train and restoration/val"]
+    storage["Local dataset or S3 snapshot<br/>S3 downloads to local cache"]
+    crops["Paired native-coordinate crops<br/>Same locations in before and after<br/>Longitude wrapping"]
+    train["Train combined residual U-Net<br/>Predict corrected RGB; paired L1 loss"]
+    validation["Fixed validation crops<br/>Loss, edge, texture and actual join metrics"]
+    mobile["Optional reviewed real-mobile pairs<br/>Separate physical scenes in mobile_val<br/>Compare uncorrected baseline"]
+    select["Select best checkpoint<br/>Mobile L1 when enabled<br/>Otherwise ordinary paired validation L1"]
+    artifacts["combined_best.pt<br/>training.yaml + training_report.json"]
+    review["Held-out real mobile full-panorama review<br/>Required before production activation"]
+    pairs --> manifest --> package --> dataset
+    references --> synth --> stitch --> dataset
+    dataset --> storage --> crops --> train --> validation
+    mobile --> validation
+    validation --> select --> artifacts --> review
+    review -.->|Approved checkpoint| inference["Inference correction block"]
+```
 
-Each tile carries its original pixel origin and dimensions. Camera metadata carries projection type, intrinsics and FOV. Per-frame yaw/pitch/roll is converted to a rotation matrix. The spherical projector maps equirectangular rays back into each source image and then into the correct tile coordinate system.
+All variants of a physical scene stay in one split. Real mobile validation scenes
+must also be separate from ordinary validation. Synthetic mobile examples are
+labelled `synthetic_mobile` and cannot replace a real mobile benchmark.
+Synthetic generation simulates rotation and appearance changes, not translation
+parallax, hidden surfaces, rolling shutter or real moving people.
 
-## Resolution strategy
+The current job selects `tasks: [combined]` in
+[training_job.yaml](pano_ai/train/configs/training_job.yaml). This route needs
+aligned before/after panoramas, not per-stage displacement, ownership or defect
+mask labels. Optional alignment/blending heads require separate labelled data
+and are not trained by this job. Checkpoint selection can explicitly override
+the default with `combined.checkpoint_selection`.
 
-The tile encoder operates on 1024 x 1024 native pixels and retains stride-8 feature maps (128 x 128). The spherical feature canvas is intentionally smaller than the final panorama to keep training/inference tractable. The decoder reconstructs the requested production output size. Training uses a configurable smaller target (default 3000 x 1500) and inference uses the production 12000 x 6000 target.
+## 3. Combined correction model: residual U-Net
 
-## Correction stages
+```mermaid
+flowchart TD
+    rgb["RGB tile<br/>3 x H x W"]
+    e1["Encoder 1: ConvBlock<br/>32 channels, H x W"]
+    e2["MaxPool + Encoder 2<br/>64 channels, H/2 x W/2"]
+    e3["MaxPool + Encoder 3<br/>128 channels, H/4 x W/4"]
+    bottleneck["MaxPool + Bottleneck<br/>128 channels, H/8 x W/8"]
+    d3["Upsample + concatenate Encoder 3<br/>ConvBlock: 64 channels"]
+    d2["Upsample + concatenate Encoder 2<br/>ConvBlock: 32 channels"]
+    d1["Upsample + concatenate Encoder 1<br/>ConvBlock: 32 channels"]
+    residual["3 x 3 convolution<br/>3-channel RGB residual"]
+    add["Add input RGB + residual<br/>Clamp to 0..1"]
+    rgb --> e1 --> e2 --> e3 --> bottleneck --> d3 --> d2 --> d1 --> residual --> add
+    e3 -->|Skip connection| d3
+    e2 -->|Skip connection| d2
+    e1 -->|Skip connection| d1
+    rgb -->|Residual connection| add
+```
 
-Corrections remain independent models. Baseline learned stages (glare, nadir/zenith, color) and advanced learned stages (parallax, ghost removal) are applied using overlapping 1024 tiles so a 12K image does not need to pass through a correction U-Net as one giant activation. Lens-dot removal and sharpening remain classical finishing stages. Pairwise advanced stages such as seam blending, overlap detection and parallax-flow require explicit auxiliary reference/mask data and remain separately enabled after their checkpoints and contracts are validated.
+Channel counts show the default `base_channels: 32`. Each ConvBlock contains two
+3x3 convolutions with GroupNorm and SiLU. Upsampling is bilinear to the matching
+encoder size. The implementation is
+[CombinedRestorationUNet](pano_ai/models/combined_restoration.py) using
+[RestorationUNet](pano_ai/models/restoration_backbone.py).
+Training uses native paired crops; inference processes overlapping tiles and
+blends their outputs. The default training crop is 1024x1024. No mask input is
+required for this combined model, and exact preservation of unchanged regions
+is not guaranteed.
 
-## Production principle
+## 4. Experimental tiled neural panorama decoder
 
-The 12K output size is a tensor/output-resolution requirement, not a requirement for 216 million fully connected neurons. Spatial convolution and tiled decoding are used to make the output feasible.
+```mermaid
+flowchart TD
+    frames["Native-resolution source frames"]
+    tile["Overlapping source tiles<br/>Original pixel origins and dimensions"]
+    encoder["Shared ResNet18 encoder<br/>Stride-8 feature maps"]
+    metadata["Tile position + camera intrinsics<br/>Projection type + camera rotation"]
+    tokens["Pooled visual tokens + metadata embeddings"]
+    attention["Attention across tile tokens<br/>Contextual tokens + scene token"]
+    second["Second streamed encoder pass<br/>Context-gated tile feature maps"]
+    projection["Camera-aware spherical feature projection<br/>Weighted accumulation on feature canvas"]
+    condition["Global scene conditioning"]
+    decoder["Multi-scale RGB decoder<br/>Tiled output on a consistent pixel-centre grid"]
+    output["Requested panorama dimensions<br/>Optional post-blend correction"]
+    frames --> tile --> encoder --> tokens --> attention
+    metadata --> tokens
+    tile --> second
+    attention -.-> second
+    second --> projection --> condition --> decoder --> output
+    metadata -.-> projection
+    attention -.-> condition
+```
+
+This is `ai_pipeline.mode: tiled_neural`, implemented by
+[PanoramaModel](pano_ai/models/panorama_model.py). It is a separate training route
+requiring calibrated source images and aligned reference panoramas; training
+`combined` does not train this decoder. Corrected coordinate conventions require
+compatible `panorama_pixel_centres_v2` checkpoints.
+
+Streaming limits feature-map memory, but attention still operates over the tile
+tokens. Variable frame counts and tiled decoding do not imply unlimited memory
+or validated quality at arbitrary capture counts.
+
+## Resolution and quality limits
+
+The requested output may be 12000x6000, but the current geometric compositor
+works at at most 4096 pixels wide and enlarges larger outputs. A 12K file therefore
+does not establish native 12K detail. The experimental decoder also uses a smaller
+spherical feature canvas; output dimensions alone cannot restore lost texture.
+
+Translations and optional depth are retained in the shared camera format, but
+current composition uses rotation-only geometry. Strong nearby parallax, missing
+coverage and hidden floor remain limitations. Synthetic smoke tests verify
+execution and contracts; they do not demonstrate real mobile quality or parity
+with a commercial panorama system.

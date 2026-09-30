@@ -8,6 +8,16 @@ import numpy as np
 LOGGER = logging.getLogger(__name__)
 
 
+def remap_preserving_coverage(image, valid, quality, flow):
+    from .local_alignment import remap_local
+    warped = remap_local(image, flow)
+    mask = remap_local(valid, flow, True)
+    score = remap_local(quality, flow)
+    lost = (valid > 0) & (mask == 0)
+    warped[lost], mask[lost], score[lost] = image[lost], valid[lost], quality[lost]
+    return warped, mask, score
+
+
 def spherical_rays(width):
     lon = ((np.arange(width, dtype=np.float32) + 0.5) / width - 0.5) * (2 * np.pi)
     lat = (0.5 - (np.arange(width // 2, dtype=np.float32) + 0.5) / (width // 2)) * np.pi
@@ -24,8 +34,15 @@ def warp_frame(path, record, rotation, rays):
     safe_depth = np.maximum(depth, 1e-6)
     u = record['fx'] * camera[..., 0] / safe_depth + record['cx']
     v = -record['fy'] * camera[..., 1] / safe_depth + record['cy']
+    direction_valid = depth > 0
+    if record.get('projection') == 'fisheye_180':
+        theta = np.arccos(np.clip(depth, -1, 1))
+        rho = np.maximum(np.linalg.norm(camera[..., :2], axis=-1), 1e-8)
+        u = record['fx'] * theta * camera[..., 0] / rho + record['cx']
+        v = -record['fy'] * theta * camera[..., 1] / rho + record['cy']
+        direction_valid = theta <= np.deg2rad(record['fov_degrees']) / 2
     edge = np.minimum.reduce([u, v, record['w'] - 1 - u, record['h'] - 1 - v])
-    valid = (edge > 0) & (depth > 0)
+    valid = (edge > 0) & direction_valid
     # Extend source edge colours for the Laplacian pyramid. Black outside the
     # footprint bleeds into valid pixels at coarse bands and creates halos.
     # The separate mask still strictly limits real coverage.
@@ -92,7 +109,7 @@ def seam_masks(images, masks):
 
 
 def compose_sphere(paths, records, rotations, width, compensate=True, find_seams=True,
-                   local_alignment=False, seam_width=1024, blend_bands=5, source_regions=None):
+                   local_alignment=False, seam_width=1024, blend_bands=5, source_regions=None, view_refiner=None):
     """Keep only thumbnails in memory; stream large warps into the blender."""
     if len(paths) == 1:
         image, valid, _ = warp_frame(paths[0], records[0], rotations[0], spherical_rays(width))
@@ -112,17 +129,22 @@ def compose_sphere(paths, records, rotations, width, compensate=True, find_seams
                     for image, gain in zip(small_images, gains)]
     fields = [None] * len(paths)
     alignment_report = {'method': 'disabled'}
-    if local_alignment:
+    if local_alignment or view_refiner is not None:
         from .local_alignment import align_views, remap_local
         LOGGER.warning('Estimating bounded local alignment for %d views', len(paths))
-        fields, alignment_report = align_views(small_images, valid_masks, qualities)
+        fields, alignment_report = (view_refiner.align(small_images, valid_masks, qualities)
+                                    if view_refiner is not None else align_views(small_images, valid_masks, qualities))
         LOGGER.warning('Accepted local alignment for %d/%d views',
                        sum(item['accepted'] for item in alignment_report['frames']), len(paths))
-        small_images = [remap_local(im, flow) for im, flow in zip(small_images, fields)]
-        valid_masks = [remap_local(mask, flow, True) for mask, flow in zip(valid_masks, fields)]
-    del qualities
+        for i, flow in enumerate(fields):
+            small_images[i], valid_masks[i], qualities[i] = remap_preserving_coverage(
+                small_images[i], valid_masks[i], qualities[i], flow)
     LOGGER.warning('Selecting seams for %d masked views at %dx%d', len(paths), seam_width, seam_width // 2)
     ownership = seam_masks(small_images, valid_masks) if find_seams else valid_masks
+    learned_blending = {'method': 'disabled'}
+    if view_refiner is not None:
+        ownership, learned_blending = view_refiner.ownership(small_images, valid_masks, qualities, ownership)
+    del qualities
     region_report = []
     if source_regions:
         from .source_regions import preserve_source_regions
@@ -142,9 +164,7 @@ def compose_sphere(paths, records, rotations, width, compensate=True, find_seams
     for path, record, rotation, gain, owned, flow in zip(paths, records, rotations, gains, ownership, fields):
         image, valid, quality = warp_frame(path, record, rotation, rays)
         if flow is not None:
-            image = remap_local(image, flow)
-            valid = remap_local(valid, flow, True)
-            quality = remap_local(quality, flow)
+            image, valid, quality = remap_preserving_coverage(image, valid, quality, flow)
         image = np.clip(image * gain, 0, 255).astype(np.uint8)
         better = quality > best_quality
         fallback[better] = image[better]
@@ -172,6 +192,7 @@ def compose_sphere(paths, records, rotations, width, compensate=True, find_seams
     return result, coverage, {'exposure_gains': gains.tolist(),
                               'local_alignment': alignment_report,
                               'source_regions': region_report,
+                              'learned_blending': learned_blending,
                               'seam_width': seam_width, 'blend_bands': bands,
                               'seam_method': 'graph_cut' if find_seams else 'all_valid',
                               'coverage_fallback_pixels': int(missing.sum())}

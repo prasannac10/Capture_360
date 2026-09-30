@@ -138,10 +138,10 @@ def stitch_files(image_paths, output_path, output_size, profile, poses_path=None
     pairwise homographies is not geometrically stable for a camera sweep.
     The explicit raw pipeline remains available for controlled planar inputs.
     """
+    if poses_path is not None:
+        from .pose_stitcher import stitch_pose_files
+        return stitch_pose_files(image_paths, output_path, output_size, poses_path, pose_options)
     if profile["projection"] == "pinhole":
-        if poses_path is not None:
-            from .pose_stitcher import stitch_pose_files
-            return stitch_pose_files(image_paths, output_path, output_size, poses_path, pose_options)
         return stitch_perspective_files(image_paths, output_path, output_size)
     if profile["projection"] == "fisheye_180":
         return stitch_fisheye_files(

@@ -1,0 +1,9 @@
+# Optional metrics/export/HDR dependencies; install only for those workflows.
+# Installing these does not implement native tiled ONNX export or HDR ingestion.
+-r requirements.txt
+tqdm
+scikit-image
+lpips
+onnx>=1.16
+OpenEXR
+Imath

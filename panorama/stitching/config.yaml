@@ -49,18 +49,33 @@ input:
   preserve_original_resolution: true
 loss:
   supervised: {l1_weight: 1.0,ssim_weight: 0.2,perceptual_weight: 0.1}
-  geometry: {smoothness_weight: 1.0}
+  # RGB-only training has no predicted geometry for this loss; nonzero is rejected.
+  geometry: {smoothness_weight: 0.0}
 stitching:
   # The dispatcher in panorama.stitching calls only this selected implementation.
-  # Valid values: ai (trained model) or classical (OpenCV/Hugin).
+  # ai uses ai_pipeline.mode; classical uses OpenCV/Hugin.
   engine: ai
   output_width: 12000
   output_height: 6000
 correction:
+  # combined is an alternative trained from PTGui-before / corrected-after pairs.
+  # Enable it alone after mobile validation; trained weights are not supplied.
   allow_untrained: false
-  checkpoints: {glare: ../pano_ai/checkpoints/glare_best.pt,nadir_zenith: ../pano_ai/checkpoints/nadir_zenith_best.pt,color: ../pano_ai/checkpoints/color_best.pt}
-  toggles: {glare: false,dots: false,nadir_zenith: false,color: false,sharpen: false}
+  use_ema: true
+  checkpoints: {combined: ../pano_ai/checkpoints/combined_best.pt,glare: ../pano_ai/checkpoints/glare_best.pt,nadir_zenith: ../pano_ai/checkpoints/nadir_zenith_best.pt,color: ../pano_ai/checkpoints/color_best.pt}
+  toggles: {combined: false,glare: false,dots: false,nadir_zenith: false,color: false,sharpen: false}
+ai_pipeline:
+  # Retain observed RGB. The legacy panorama decoder is available as tiled_neural.
+  mode: source_preserving
+  learned_views:
+    min_confidence: 0.8
+    max_displacement: 8.0
+    # Enable only after separate supervised training and visual validation.
+    alignment: {enabled: false, checkpoint: ../pano_ai/checkpoints/alignment_best.pt}
+    blending: {enabled: false, checkpoint: ../pano_ai/checkpoints/blending_best.pt}
 inference:
+  use_ema: true
+  allow_legacy_checkpoint: false
   checkpoint: ../pano_ai/checkpoints/panorama_tiled_best.pt
   output_dir: ../outputs/panoramas
   save_outputs: true
@@ -71,6 +86,7 @@ inference:
   output_tile: 1024
 advanced_corrections:
   allow_untrained: false
+  use_ema: true
   checkpoints: {parallax: ../pano_ai/checkpoints/parallax_best.pt,ghost_removal: ../pano_ai/checkpoints/ghost_removal_best.pt,seam_blending: ../pano_ai/checkpoints/seam_blending_best.pt,overlap_detection: ../pano_ai/checkpoints/overlap_detection_best.pt,parallax_flow: ../pano_ai/checkpoints/parallax_flow_best.pt}
   # AI/legacy advanced stages. These are NOT the classical activation switches.
   # Classical source correction uses classical_pose; finishing (including feet
@@ -97,10 +113,13 @@ classical_scene_overrides:
   # Reviewed per-scene settings; other scenes retain classical_pose defaults.
   scene_0004:
     enabled: true
-    seam_width: 2048
-    blend_bands: 3
-    # Structure-pinning trials introduced steps at region boundaries.
-    source_regions: []
+    seam_width: 1024
+    blend_bands: 5
+    # Keep the deepest floor in the dedicated downward view instead of mixing
+    # displaced tile lines. Upper furniture/ceiling pins remain disabled.
+    source_regions:
+      - source: nadir
+        polygon: [[0.0, 0.92], [1.0, 0.92], [1.0, 1.0], [0.0, 1.0]]
 classical_methods:
   # Legacy finishing controls. Source-level ARCore stages use classical_pose above.
   use_classical_overlap_detection: true
