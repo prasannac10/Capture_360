@@ -34,6 +34,7 @@ before running the same workflow; the local CPU test does not verify that setup.
 
 ## 1. List three real scene pairs for the first trial
 
+
 ### Scan your existing Drone / DSLR sample folders
 
 For `Files/<year>/<location>/<scene>/` containing `images/`, `Stitched.jpg`,
@@ -80,6 +81,8 @@ For this **combined panorama correction** training, only `Stitched.jpg` and
 from source photos requires a separate calibrated supervision workflow.
 
 ### Alternatively, enter pairs manually
+
+=======
 
 Copy the editable example:
 
