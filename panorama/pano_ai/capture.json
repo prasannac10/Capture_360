@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "coordinates": "opengl_camera_to_world",
+  "source": "calibrated",
+  "frames": [
+    {
+      "name": "camera_0",
+      "filename": "images/frame_0.jpg",
+      "width": 1920,
+      "height": 1080,
+      "intrinsics": [1200, 1200, 960, 540],
+      "rotation": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+      "translation": [0, 0, 0],
+      "projection": "pinhole"
+    },
+    {
+      "name": "camera_1",
+      "filename": "images/frame_1.jpg",
+      "width": 1920,
+      "height": 1080,
+      "intrinsics": [1200, 1200, 960, 540],
+      "rotation": [[0.8660254038, 0, 0.5], [0, 1, 0], [-0.5, 0, 0.8660254038]],
+      "translation": [0, 0, 0],
+      "projection": "pinhole"
+    }
+  ]
+}
