@@ -1,9 +1,17 @@
 # Paired layout: restoration/{train,val}/<scene>/pair.json and before/after images.
 # Step-by-step commands: panorama/pano_ai/README.md
 # Once AWS credentials/runtime are configured, only dataset_root changes for S3 input.
+
+# Local paths resolve relative to this YAML file. Matches the preparation guide.
+dataset_root: ../../../../outputs/training_bundle
+# dataset_root: s3://your-bucket/datasets/panorama-v1/
+cache_dir: ../../../../outputs/dataset_cache
+# Use a new output directory for each run to preserve previous results.
+=======
 dataset_root: ../../data/training_bundle
 # dataset_root: s3://your-bucket/datasets/panorama-v1/
 cache_dir: ../../../../outputs/dataset_cache
+
 output_dir: ../../../../outputs/training
 pipeline_config: ../../../stitching/config.yaml
 seed: 42
@@ -17,10 +25,20 @@ mobile_validation:
   enabled: false
   path: restoration/mobile_val
 combined:
+
+  # Optional: enable only one of resume or finetune; use trusted local checkpoints.
+  # Resume restores optimizer/state; epochs is the desired total epoch count.
+  # resume: ../../../../outputs/training_pilot/combined/combined_last.pt
+  # Fine-tune loads weights only; epochs counts NEW epochs with the lr below.
+  # finetune: ../../../../outputs/training_pilot/combined/combined_best.pt
+  # Default selection: mobile when enabled above, otherwise paired validation.
+  # checkpoint_selection: paired
+=======
   # Optional trusted checkpoint; epochs is the total, not additional epochs.
   # Alternatively load weights only, with a fresh optimizer and epoch count:
   # finetune: ../../../../outputs/training_pilot/combined/combined_best.pt
   # resume: ../../../../outputs/training_pilot/combined/combined_last.pt
+
   input_size: [1024, 1024]
   crops_per_scene: 12
   base_channels: 32

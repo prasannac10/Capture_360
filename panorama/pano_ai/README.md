@@ -34,6 +34,56 @@ before running the same workflow; the local CPU test does not verify that setup.
 
 ## 1. List three real scene pairs for the first trial
 
+
+### Scan your existing Drone / DSLR sample folders
+
+For `Files/<year>/<location>/<scene>/` containing `images/`, `Stitched.jpg`,
+`Edited.jpg` and optionally `Panorama.pts`, generate the supporting files:
+
+```powershell
+& $trainPython -m panorama.pano_ai.data.scan_samples --input "D:/Files" --out outputs/sample_training_setup
+```
+
+The input can also be `D:/Files/2026` or `D:/Files/2026/Location`.
+The scanner recursively finds scene folders and writes `pairs.json`,
+`training_job.yaml` and `scan_report.json` into a new output folder. It does
+not modify your samples. Incomplete scene folders fail explicitly.
+
+Review `pairs.json`: set each `domain` to `dslr` or `drone` (initially null),
+then verify alignment as described in step 2 before setting
+`alignment_verified` to true. If every scene has the same source, you can pass
+`--domain dslr` or `--domain drone` to prefill it.
+The scanner assumes the panoramas are equirectangular; confirm they are full
+2:1 spheres. Dimensions and orientation are checked during packaging.
+
+Splits are assigned by location name, with the last roughly 20% of sorted
+locations reserved for validation (at least one when multiple locations exist).
+The same location name across years stays together. Review these identities:
+merge aliases for the same physical location, and distinguish unrelated locations
+with identical names if needed. A single location produces only training entries;
+add pairs from an independent validation location before starting training.
+
+After review, package and train using the generated YAML:
+
+```powershell
+& $trainPython -m panorama.pano_ai.data.prepare_pairs --manifest outputs/sample_training_setup/pairs.json --out outputs/sample_training_setup/training_bundle
+& $trainPython -m panorama.pano_ai.train.run_training --config outputs/sample_training_setup/training_job.yaml
+```
+
+The generated YAML points to that bundle and saves results under
+`outputs/sample_training_setup/training_run`. It retains the template's training
+settings; adjust epochs/crop size for your intended run as described below.
+Use a new setup output folder for subsequent scans.
+
+For this **combined panorama correction** training, only `Stitched.jpg` and
+`Edited.jpg` are consumed. No `capture.json` is needed, and `images/` and
+`Panorama.pts` are not used as training inputs. Training stitching geometry
+from source photos requires a separate calibrated supervision workflow.
+
+### Alternatively, enter pairs manually
+
+=======
+
 Copy the editable example:
 
 ```powershell

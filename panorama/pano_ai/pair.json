@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "pairs": [
+    {
+      "scene_id": "room_001",
+      "source_scene_id": "location_001",
+      "split": "train",
+      "domain": "dslr",
+      "before": "D:/PanoramaData/room_001/ptgui.png",
+      "after": "D:/PanoramaData/room_001/corrected.png",
+      "projection": "equirectangular",
+      "alignment_verified": false
+    }
+  ]
+}
