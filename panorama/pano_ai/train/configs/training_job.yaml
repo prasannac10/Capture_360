@@ -1,0 +1,28 @@
+# Paired layout: restoration/{train,val}/<scene>/pair.json and before/after images.
+# Step-by-step commands: panorama/pano_ai/README.md
+# Once AWS credentials/runtime are configured, only dataset_root changes for S3 input.
+dataset_root: ../../data/training_bundle
+# dataset_root: s3://your-bucket/datasets/panorama-v1/
+cache_dir: ../../../../outputs/dataset_cache
+output_dir: ../../../../outputs/training
+pipeline_config: ../../../stitching/config.yaml
+seed: 42
+cpu_threads: 4
+epochs: 20
+# Start with the paired panoramas you have; other stages are deferred.
+tasks: [combined]
+# Enable when reviewed, held-out real mobile pairs become available.
+# When enabled, combined checkpoints are selected by mobile validation loss.
+mobile_validation:
+  enabled: false
+  path: restoration/mobile_val
+combined:
+  # Optional trusted checkpoint; epochs is the total, not additional epochs.
+  # Alternatively load weights only, with a fresh optimizer and epoch count:
+  # finetune: ../../../../outputs/training_pilot/combined/combined_best.pt
+  # resume: ../../../../outputs/training_pilot/combined/combined_last.pt
+  input_size: [1024, 1024]
+  crops_per_scene: 12
+  base_channels: 32
+  batch_size: 1
+  lr: 0.0001

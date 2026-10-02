@@ -6,11 +6,40 @@ plugins {
 android {
     namespace = "com.prasanna.capture360"
     compileSdk = 34
-    defaultConfig { ndk { abiFilters.add("arm64-v8a") }; applicationId = "com.prasanna.capture360"; minSdk = 26; targetSdk = 34; versionCode = 1; versionName = "1.0" }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
-    kotlinOptions { jvmTarget = "17" }
-    buildTypes { release { isMinifyEnabled = false; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }
-    buildFeatures { viewBinding = true }
+
+    defaultConfig {
+        ndk {
+            abiFilters.add("arm64-v8a")
+        }
+        applicationId = "com.prasanna.capture360"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
+    }
+
+    buildFeatures {
+        viewBinding = true
+    }
 }
 
 dependencies {

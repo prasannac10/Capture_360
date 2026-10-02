@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "pairs": [
+    {
+      "scene_id": "room_001",
+      "source_scene_id": "location_001",
+      "split": "train",
+      "domain": "dslr",
+      "before": "D:/PanoramaData/room_001/ptgui.png",
+      "after": "D:/PanoramaData/room_001/corrected.png",
+      "projection": "equirectangular",
+      "alignment_verified": false
+    },
+    {
+      "scene_id": "room_002",
+      "source_scene_id": "location_002",
+      "split": "train",
+      "domain": "drone",
+      "before": "D:/PanoramaData/room_002/ptgui.png",
+      "after": "D:/PanoramaData/room_002/corrected.png",
+      "projection": "equirectangular",
+      "alignment_verified": false
+    },
+    {
+      "scene_id": "room_003",
+      "source_scene_id": "location_003",
+      "split": "val",
+      "domain": "dslr",
+      "before": "D:/PanoramaData/room_003/ptgui.png",
+      "after": "D:/PanoramaData/room_003/corrected.png",
+      "projection": "equirectangular",
+      "alignment_verified": false
+    }
+  ]
+}

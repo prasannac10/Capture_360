@@ -1,0 +1,3 @@
+# Training and S3 dataset staging; includes the shared runtime dependencies.
+-r requirements.txt
+boto3

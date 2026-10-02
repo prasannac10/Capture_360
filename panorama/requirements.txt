@@ -1,0 +1,8 @@
+# Core Python panorama runtime. Optional packages are separate.
+torch>=2.3
+torchvision>=0.18
+PyYAML
+numpy
+Pillow
+scipy
+opencv-python
