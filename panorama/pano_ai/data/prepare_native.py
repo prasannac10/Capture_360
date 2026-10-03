@@ -74,7 +74,7 @@ def prepare(scene, output, capture_path=None, target_size=(12000, 6000), pts_pat
             frames.append(replace(frame, filename=filename))
         if pts:
             frames.append(replace(frame, filename=filename))
-        if is_jpeg:
+        if is_jpeg and pts is None:
             # Preserve existing JPEG bytes without another compression pass.
             shutil.copy2(path, output / filename)
         else:

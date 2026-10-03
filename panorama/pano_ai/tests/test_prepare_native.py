@@ -1,3 +1,5 @@
+import io
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -60,3 +62,34 @@ class NativePreparationTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), (root / 'prepared/images/photo.jpg').read_bytes())
             self.assertEqual(report['frames'][0]['width'], 96)
             self.assertEqual(report['frames'][0]['height'], 64)
+
+    def test_ptgui_jpeg_saves_rectified_pixels_matching_calibration(self):
+        from panorama.pano_ai.data.ptgui_calibration import PTGuiCalibration
+        from panorama.pano_ai.tests.test_ptgui_calibration import PTGuiCalibrationTests
+        from panorama.stitching.capture import load_capture
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'images').mkdir()
+            project = PTGuiCalibrationTests().project()
+            project['project']['globallenses'][0]['shift']['params']['longside'] = .01
+            pts_path = root / 'Panorama.pts'
+            pts_path.write_text(json.dumps(project), encoding='utf-8')
+            pixels = np.arange(48 * 64 * 3, dtype=np.uint8).reshape(48, 64, 3)
+            for name in ('0', '1'):
+                Image.fromarray(pixels).save(root / f'images/{name}.jpg')
+            Image.new('RGB', (64, 32)).save(root / 'Stitched.jpg')
+            with Image.open(root / 'images/0.jpg') as image:
+                decoded = np.array(image.convert('RGB'))
+            corrected, frame, zoom = PTGuiCalibration(pts_path).rectify('0', decoded)
+            self.assertFalse(np.array_equal(corrected, decoded))
+            expected = io.BytesIO()
+            Image.fromarray(corrected).save(expected, format='JPEG', quality=100, subsampling=0)
+
+            report = prepare(root, root / 'prepared', target_size=(64, 32), pts_path=pts_path)
+
+            self.assertEqual((root / 'prepared/images/0.jpg').read_bytes(), expected.getvalue())
+            self.assertEqual(report['frames'][0]['rectification_zoom'], zoom)
+            capture = load_capture(root / 'prepared/capture.json')
+            self.assertEqual(capture.frames[0].intrinsics, frame.intrinsics)
+            self.assertTrue(report['ready_for_calibration_loading'])
