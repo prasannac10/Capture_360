@@ -34,6 +34,13 @@ training:
   mixed_precision: true
   max_tiles_per_frame: null
 input:
+  # Same calibrated overlap photometry in neural training and inference.
+  exposure_compensation:
+    enabled: true
+    preview_width: 512
+    min_overlap: 64
+    max_gain: 2.0
+    max_log_mad: 0.2
   profile: auto
   min_frames: 4
   max_frames: 30
@@ -58,15 +65,17 @@ stitching:
   output_width: 12000
   output_height: 6000
 correction:
-  # combined is an alternative trained from PTGui-before / corrected-after pairs.
-  # Enable it alone after mobile validation; trained weights are not supplied.
+  # Train combined on actual initial-stitch / reviewed-final pairs, including defects.
+  # Enable it alone after held-out validation; trained weights are not supplied.
   allow_untrained: false
   use_ema: true
   checkpoints: {combined: ../pano_ai/checkpoints/combined_best.pt,glare: ../pano_ai/checkpoints/glare_best.pt,nadir_zenith: ../pano_ai/checkpoints/nadir_zenith_best.pt,color: ../pano_ai/checkpoints/color_best.pt}
   toggles: {combined: false,glare: false,dots: false,nadir_zenith: false,color: false,sharpen: false}
 ai_pipeline:
-  # Retain observed RGB. The legacy panorama decoder is available as tiled_neural.
-  mode: source_preserving
+  # Stage 1: trained PanoramaModel stitches source frames into panorama RGB.
+  # Stage 2: enabled correction stages process that panorama.
+  # Requires a trained panorama checkpoint; source_preserving is an alternative.
+  mode: tiled_neural
   learned_views:
     min_confidence: 0.8
     max_displacement: 8.0

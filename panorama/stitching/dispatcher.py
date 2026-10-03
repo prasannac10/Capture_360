@@ -125,7 +125,7 @@ def stitch(
         coverage_path = output_dir / 'raw_classical_panorama_coverage.png'
         coverage = cv2.imread(str(coverage_path), cv2.IMREAD_GRAYSCALE) if coverage_path.exists() else None
         defects = load_defect_masks(scene_folder, panorama.shape[:2], coverage) if scene_folder else {}
-        stage_masks = {key: defects[label] for key, label in (('glare', 'glare'), ('dots', 'lens_dots')) if label in defects}
+        stage_masks = {key: defects[label] for key, label in (('glare', 'glare'), ('dots', 'lens_dots'), ('shadow', 'shadow')) if label in defects}
         repair_mask = union_masks(defects, ('missing_coverage', 'photographer', 'other'))
         corrected, metadata = ClassicalCorrectionPipeline(config).run(
             panorama,

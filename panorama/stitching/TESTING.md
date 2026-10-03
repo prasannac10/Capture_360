@@ -197,6 +197,15 @@ repairs heading errors, not translation or depth-dependent parallax.
 
 ## Removing the photographer's feet
 
+Local alignment keeps the selected reference frame fixed and protects each
+view's central region; deformation tapers into side/corner overlap regions.
+Set `classical_pose.reference_frame` to an input filename stem, e.g. `mid_01`
+(without `.jpg`). The default is the first input frame. Enable
+`classical_pose.local_alignment` to use classical local registration. This
+protection also applies to learned view refinement in spherical composition.
+Spherical reprojection and global pose refinement are separate operations.
+
+
 `classical_finishing.object_removal: true` activates the removal stage before
 contrast and sharpening. `classical_parameters.object_removal.scenes` contains
 settings keyed by scene folder name (currently `scene_0004` and `scene_0005`).

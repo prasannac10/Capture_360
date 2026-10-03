@@ -89,10 +89,17 @@ def run(config_path):
         if not np.isfinite(val_loss) or not all(torch.isfinite(t).all() for t in state['model'].values()):
             raise RuntimeError(f'{task}: non-finite checkpoint or validation loss')
         report['tasks'][task] = dict(checkpoint=str(checkpoint), val_loss=val_loss,
+                                    training_log=str(task_out / 'training_log.jsonl'),
+                                    train_metrics=state.get('train_metrics'),
+                                    validation_metrics=state.get('validation_metrics', state.get('metrics')),
+                                    learning_rates=state.get('learning_rates'),
                                     parameter_change_l1=state.get('parameter_change_l1'), epoch=state['epoch'],
                                     checkpoint_selection=state.get('checkpoint_selection'),
                                     finetuned_from=state.get('finetuned_from'), resumed_from=state.get('resumed_from'),
                                     selection_loss=state.get('selection_loss'), mobile_metrics=state.get('mobile_metrics'),
+                                    paired_baseline=state.get('paired_baseline'),
+                                    paired_metrics=state.get('metrics'),
+                                    paired_beats_baseline_l1=state.get('paired_beats_baseline_l1'),
                                     mobile_baseline=state.get('mobile_baseline'),
                                     mobile_beats_baseline_l1=state.get('mobile_beats_baseline_l1'))
         (output / 'training_report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')

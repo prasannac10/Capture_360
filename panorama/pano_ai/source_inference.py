@@ -16,7 +16,8 @@ def run_source_inference(scene, config, config_path, output_dir=None, profile='a
     scene, config_path = Path(scene).resolve(), Path(config_path).resolve()
     model_cfg = config['model']
     dataset = VariableTilePanoramaDataset(scene.parent, False, model_cfg['tile_size'], model_cfg['tile_overlap'],
-                                          input_config=config['input'], profile=profile)
+                                          input_config=config['input'], profile=profile,
+                                          exposure_config={'enabled': False})
     sample = dataset[next(i for i, p in enumerate(dataset.scenes) if p.resolve() == scene)]
     output = Path(output_dir or config_path.parent / config['inference']['output_dir']) / scene.name
     output.mkdir(parents=True, exist_ok=True)

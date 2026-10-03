@@ -10,7 +10,9 @@ This is the single guide for preparing data and starting training. Follow steps
 - [AWS and S3](#aws-and-s3)
 - [Architecture block diagrams](../ARCHITECTURE_VARIABLE_TILED.md)
 
-**Start with your PTGui-before / corrected-after pairs. Train only `combined`.**
+**The overall pipeline is AI stitching first, then panorama correction.**
+Use the two-stage training workflow below for both models. Steps 1-7 describe
+correction-only training from PTGui-before / corrected-after pairs.
 The optional mobile-example generator is described in step 7. No separate glare,
 ghost, alignment or blending labels are needed for this first workflow.
 
@@ -32,8 +34,140 @@ Source-preserving inference saves initial and final panoramas as PNG and lossles
 For AWS GPU training, configure a compatible CUDA-enabled PyTorch environment
 before running the same workflow; the local CPU test does not verify that setup.
 
-## 1. List three real scene pairs for the first trial
+## Train AI stitching followed by correction
 
+The shared config selects `ai_pipeline.mode: tiled_neural`. `PanoramaModel`
+stitches calibrated source frames into an initial RGB panorama; the correction
+pipeline processes that output next. Both stages need trained checkpoints.
+
+Prepare a dataset with both layouts:
+
+```text
+outputs/training_bundle/
+  panorama/train/<scene>/images/, capture.json, panorama.png
+  panorama/val/<scene>/images/, capture.json, panorama.png
+  restoration/train/<scene>/before.png, after.png, pair.json
+  restoration/val/<scene>/before.png, after.png, pair.json
+```
+
+Each stitching scene needs source photos, accurate camera intrinsics/rotations
+in the [shared camera contract](#shared-camera-input), and a reference
+`panorama.png` aligned to that camera coordinate system. Supported pose adapters
+can replace `capture.json`. Split by physical scene, keeping every variant of a
+scene in one split across both datasets. The existing pair packager supplies
+only `restoration/`; calibrated stitching scenes must be prepared separately.
+`Stitched.jpg` / `Edited.jpg` pairs alone cannot train AI stitching.
+
+```powershell
+& $trainPython -m panorama.pano_ai.train.run_training --config panorama/pano_ai/train/configs/stitching_correction_job.yaml
+```
+
+This job trains `panorama` first and `combined` second, independently. It writes
+`panorama/panorama_tiled_best.pt` and `combined/combined_best.pt` under
+`outputs/stitching_correction_training`. It does not automatically generate
+correction pairs from stitching predictions. For correction training matched
+to the deployed stitcher, prepare reviewed before/after pairs from its outputs
+and train correction on those pairs, preserving the held-out scene split.
+
+After validation, set these fields in `panorama/stitching/config.yaml` (paths
+resolve relative to that config):
+
+```yaml
+ai_pipeline:
+  mode: tiled_neural
+inference:
+  checkpoint: ../../outputs/stitching_correction_training/panorama/panorama_tiled_best.pt
+correction:
+  checkpoints:
+    combined: ../../outputs/stitching_correction_training/combined/combined_best.pt
+  toggles:
+    combined: true
+```
+
+Update the existing mappings, retaining their other settings and keeping the
+other post-blend correction toggles false for combined correction.
+Run the complete pipeline on a calibrated capture scene:
+
+```powershell
+& $trainPython -m panorama.pano_ai.tiled_inference --scene "D:/Captures/scene_001" --config ../stitching/config.yaml --output-dir outputs/ai_panorama
+```
+
+Neural stitching remains unvalidated for production quality. A checkpoint with
+`contract: panorama_exposure_blending_v4` is required. Correction remains disabled
+in the shared config until its trained checkpoint has been evaluated.
+
+## Training logs and quality metrics
+
+Each training stage prints its effective configuration, device, optimizer settings,
+learning rates, dataset counts and total/trainable parameter counts before the
+first epoch. Epoch summaries are flushed to the console and appended to
+`<output_dir>/<task>/training_log.jsonl` (or the output directory of a standalone
+trainer). Each invocation has a run ID; resumed runs append without erasing history.
+The final training report links each stage's log, and checkpoints record the
+selected epoch's metrics and learning rates.
+
+Panorama and correction stages log training and validation loss, plain RGB L1,
+PSNR in dB, a **global SSIM proxy**, and `pixel_accuracy_pct`. Pixel accuracy means
+the percentage of pixels with **all three RGB errors <= 8/255**; it is not
+classification accuracy or a guarantee of good stitching. Training metrics use
+the predictions made during optimization, while validation uses the held-out
+split (EMA weights for panorama when enabled). The correction training loss is
+the weighted structural objective; its validation loss is plain L1, so compare
+the separately logged train/validation L1 for the same error definition.
+Mobile validation metrics are included when enabled. Pairwise alignment/blending
+tasks log their own supervised loss and learning rate; RGB accuracy does not apply.
+Learning rates are read from every optimizer parameter group each epoch; these
+trainers currently use constant learning rates unless their optimizer is changed.
+
+## What the updated stitching and correction models address
+
+Neural stitching uses exposure-matched source tiles, fixed encoder BatchNorm
+statistics, smooth tile weights, per-camera normalization and feathered camera
+footprints. This targets exposure steps and tile/camera boundary artifacts. The
+feature decoder still reconstructs RGB from a lower-resolution feature canvas;
+requesting 12000x6000 output does not guarantee original photo detail. Compare
+with `ai_pipeline.mode: source_preserving` when fine texture is critical. That
+route already performs source RGB exposure compensation and multiband blending.
+Neither route automatically solves arbitrary translation parallax.
+
+New combined correction checkpoints use `paired_panorama_restoration_v2`:
+
+- A wider-context residual U-Net starts as an exact identity. Its dilated
+  bottleneck can learn spatial seam cleanup, local deghosting, denoising and
+  detail restoration, as well as color changes, from reviewed target examples.
+- Spatial normalization is removed to avoid tile-dependent brightness changes.
+- The objective combines pixel fidelity, local SSIM, edge gradients and coarse
+  scales. Edited regions receive extra weight while unchanged pixels remain
+  supervised. Configure weights under `combined.loss` in the training job.
+- Half the training crops are sampled around local before/after edits when
+  available (`combined.changed_crop_probability`); the rest remain uniform.
+  Validation always uses the same fixed crops, without target-driven sampling.
+- Inference adds 160 pixels of context on each side, wraps longitude, clamps
+  poles, aligns the pooling lattice and blends floats before one quantization.
+  Context padding increases inference memory compared with v1.
+- Reports include an unchanged-input paired-validation baseline and
+  `paired_beats_baseline_l1`; inspect visual edge/texture/join metrics too. Best
+  checkpoints are selected by held-out L1, not the weighted training objective.
+
+Existing v1 correction checkpoints still load through the original model for
+inference. V2 training starts fresh; v1 resume/fine-tuning is rejected because the
+architecture differs. V2 resume also requires the same loss settings. Fine-tune
+from a v2 checkpoint when intentionally changing the objective.
+
+Correction does not have source frames, depth or alternative views. It cannot
+reliably reconstruct missing content, clipped highlights or fix large geometric
+misregistration. Include actual stitching failures and reviewed repairs in the
+pairs: seam/exposure changes, ghost removal, noise/detail cleanup, glare and
+small missing regions where a trustworthy target exists. Pairs containing only
+color edits cannot teach those other repairs. Keep the panorama coordinate
+system aligned and physical scenes separated across train/validation.
+
+The two-stage job does not regenerate correction inputs automatically. After
+training the new stitcher, render its outputs, prepare/review the matching
+before/after pairs, then run a `tasks: [combined]` job on those pairs. Validate
+initial and corrected panoramas on unseen captures before enabling correction.
+
+## 1. List three real scene pairs for the first trial
 
 ### Scan your existing Drone / DSLR sample folders
 
@@ -81,8 +215,6 @@ For this **combined panorama correction** training, only `Stitched.jpg` and
 from source photos requires a separate calibrated supervision workflow.
 
 ### Alternatively, enter pairs manually
-
-=======
 
 Copy the editable example:
 
@@ -420,18 +552,29 @@ mobile benchmark. Real validation stays disabled until reviewed pairs exist.
 
 ## Inference modes
 
-The default `ai_pipeline.mode: source_preserving` in
+The alternative `ai_pipeline.mode: source_preserving` in
 [`../stitching/config.yaml`](../stitching/config.yaml) projects calibrated source
 RGB, optionally refines views with separately trained alignment/ownership heads,
 then runs explicitly enabled restoration stages. With learned heads disabled it
 uses geometric projection and graph-cut/multiband composition. It does not load
 the legacy panorama decoder checkpoint in this mode.
 
-`ai_pipeline.mode: tiled_neural` retains the original learned RGB decoder for
-experiments. Its corrected pixel-centre grids, camera axes and encoder
-normalization require retraining. New checkpoints declare
-`contract: panorama_pixel_centres_v2`; old checkpoints fail by default. Set
+The default `ai_pipeline.mode: tiled_neural` runs the learned stitching model
+first and correction second. Its corrected pixel-centre grids, camera axes and encoder
+normalization, fixed encoder BatchNorm statistics, exposure matching and
+camera-normalized feather blending require retraining. New checkpoints declare
+`contract: panorama_exposure_blending_v4`; old checkpoints fail by default. Set
 `inference.allow_legacy_checkpoint: true` only for an intentional comparison.
+Feature fusion uses smooth tile weights, normalizes all tiles of each camera,
+then feathers camera footprints. Tile chunks from each camera must be contiguous.
+Feature sampling clamps to the border to avoid darkening the final stride interval.
+Exposure matching estimates bounded scalar gains in linear light from calibrated
+overlap previews, rejecting clipped/dark pixels and inconsistent overlaps. It runs
+identically during training and inference; no ground-truth panorama is used.
+`input.exposure_compensation` controls this stage and must match the checkpoint.
+Metadata records gains, accepted overlap pairs and before/after log mismatch.
+Isolated frames keep unity gain. Scalar gains do not correct spatial vignetting or
+white-balance differences. Validate on held-out captures before deployment.
 `inference.use_ema` selects EMA weights when present, otherwise model weights;
 metadata records which weights were loaded. Correction checkpoints also honor
 their section's `use_ema` setting and stored channel count.
@@ -492,6 +635,25 @@ geometry. The learned heads are disabled by default because no validated trained
 weights are supplied.
 
 ## Defect masks
+
+For deterministic photographer-shadow lightening on a finished panorama, use
+an exact-size grayscale `shadow_mask.png`: white marks only the shadow and
+black protects everything else. Do not select pixels merely because they are
+dark. Feather the mask edges where practical.
+
+```powershell
+& $trainPython -m panorama.pano_classical.shadow_removal --image "D:/Scene/images/classical_panorama.jpg" --mask "D:/Scene/shadow_mask.png" --out outputs/shadow_cleanup/corrected.png
+```
+
+This estimates surrounding illumination and applies a bounded RGB gain within
+the mask, retaining texture and preserving unmasked pixels exactly. It is
+approximate on mixed surfaces and cannot remove body fragments or recover
+detail from black/clipped pixels. Inspect the result before using it as a target.
+For the classical stitching route, set `classical_finishing.shadow_removal: true`
+and put `shadow_mask.png` in the scene folder (the parent of `images/`), or add
+`"shadow": "shadow_mask.png"` to the existing defect manifest. The saved
+`01_shadow_removal.png` preserves unmasked pixels; subsequent global color and
+sharpen stages may change them. The AI route does not use this new stage.
 
 Create `defects.json` in the scene with masks at the exact final panorama size:
 

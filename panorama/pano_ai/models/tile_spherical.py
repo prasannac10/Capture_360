@@ -4,6 +4,19 @@ import math
 import torch
 import torch.nn.functional as F
 
+PANORAMA_CONTRACT = 'panorama_exposure_blending_v4'
+
+
+def normalize_camera_features(canvas, tile_weight, camera_weight):
+    """Normalize tiles before applying the camera's footprint weight."""
+    weight = camera_weight * (tile_weight > 0).to(camera_weight.dtype)
+    return canvas / tile_weight.clamp_min(1e-12), weight
+
+
+def _cosine_edge_weight(distance, width):
+    phase = (distance / width).clamp(0, 1)
+    return (0.5 - 0.5 * torch.cos(math.pi * phase)).clamp_min(1e-3)
+
 
 def equirect_dirs(h, w, device, dtype):
     lon = ((torch.arange(w, device=device, dtype=dtype) + .5) / w - .5) * (2 * math.pi)
@@ -38,28 +51,25 @@ def ypr_to_rot(ypr):
 
 def project_tile_features(
     tile_features, tile_xy, tile_wh, image_size, camera_params, rotations,
-    pano_h, pano_w, feature_stride=8,
+    pano_h, pano_w, feature_stride=8, return_per_camera=False,
 ):
+    """Fuse tiles within cameras, then feather camera footprints.
+
+    Streaming callers request per-camera weighted sums, tile weights and camera
+    weights, accumulate all chunks of a camera, and only then normalize it.
+    """
     # Half precision cannot represent all native pixel coordinates above 2048.
     with torch.autocast(device_type=tile_features.device.type, enabled=False):
         return _project_tile_features(
             tile_features.float(), tile_xy.float(), tile_wh.float(), image_size.float(),
-            camera_params.float(), rotations.float(), pano_h, pano_w, feature_stride)
+            camera_params.float(), rotations.float(), pano_h, pano_w, feature_stride,
+            return_per_camera)
 
 
-def _project_tile_features(
-    tile_features,
-    tile_xy,
-    tile_wh,
-    image_size,
-    camera_params,
-    rotations,
-    pano_h,
-    pano_w,
-    feature_stride=8,
-):
-    b, n, k, c, hf, wf = tile_features.shape
-    dev, dtype = tile_features.device, tile_features.dtype
+def project_camera_pixels(image_size, camera_params, rotations, pano_h, pano_w):
+    """Shared camera projection for feature fusion and overlap photometry (float32)."""
+    b, n = image_size.shape[:2]
+    dev, dtype = image_size.device, image_size.dtype
     world = equirect_dirs(pano_h, pano_w, dev, dtype).view(1, 1, pano_h, pano_w, 3)
     dirs = torch.einsum(
         "bnij,bnhwj->bnhwi", rotations.transpose(-1, -2), world.expand(b, n, -1, -1, -1)
@@ -90,10 +100,34 @@ def _project_tile_features(
         & (vf >= 0)
         & (vf < image_size[..., 1].view(b, n, 1, 1)),
     )
-    canvas = torch.zeros(b, c, pano_h, pano_w, device=dev, dtype=dtype)
-    weight = torch.zeros(b, 1, pano_h, pano_w, device=dev, dtype=dtype)
-    tw = wf * feature_stride
-    th = hf * feature_stride
+    iw = image_size[..., 0].view(b, n, 1, 1)
+    ih = image_size[..., 1].view(b, n, 1, 1)
+    edge = torch.minimum(torch.minimum(u / iw, (iw - u) / iw),
+                         torch.minimum(v / ih, (ih - v) / ih))
+    # Feather the outer 10% of each image; fisheye coverage also has a circular edge.
+    edge = torch.where(pin, edge, torch.minimum(edge, (fov / 2 - theta) / fov))
+    camera_weight = (_cosine_edge_weight(edge, .1) * valid).unsqueeze(2)
+    return u, v, valid, camera_weight
+
+
+def _project_tile_features(
+    tile_features,
+    tile_xy,
+    tile_wh,
+    image_size,
+    camera_params,
+    rotations,
+    pano_h,
+    pano_w,
+    feature_stride=8,
+    return_per_camera=False,
+):
+    b, n, k, c, hf, wf = tile_features.shape
+    dev, dtype = tile_features.device, tile_features.dtype
+    u, v, valid, camera_weight = project_camera_pixels(
+        image_size, camera_params, rotations, pano_h, pano_w)
+    canvas = torch.zeros(b, n, c, pano_h, pano_w, device=dev, dtype=dtype)
+    weight = torch.zeros(b, n, 1, pano_h, pano_w, device=dev, dtype=dtype)
     for i in range(k):
         x0 = tile_xy[:, :, i, 0].view(b, n, 1, 1)
         y0 = tile_xy[:, :, i, 1].view(b, n, 1, 1)
@@ -105,9 +139,18 @@ def _project_tile_features(
         grid = torch.stack((gx, gy), -1).reshape(b * n, pano_h, pano_w, 2)
         fti = tile_features[:, :, i].reshape(b * n, c, hf, wf)
         samp = F.grid_sample(
-            fti, grid, align_corners=True, padding_mode="zeros"
+            fti, grid, align_corners=True, padding_mode="border"
         ).reshape(b, n, c, pano_h, pano_w)
         w = ((valid) & (u >= x0) & (u < x1) & (v >= y0) & (v < y1)).to(dtype)
-        canvas += (samp * w.unsqueeze(2)).sum(1)
-        weight += w.sum(1).unsqueeze(1)
-    return canvas / weight.clamp_min(1e-6), weight
+        # Continuous raised-cosine tile weights suppress encoder boundary effects.
+        tx = ((u - x0) / (x1 - x0).clamp_min(1)).clamp(0, 1)
+        ty = ((v - y0) / (y1 - y0).clamp_min(1)).clamp(0, 1)
+        w = w * torch.sin(math.pi * tx).square().clamp_min(1e-3)
+        w = w * torch.sin(math.pi * ty).square().clamp_min(1e-3)
+        canvas = canvas + samp * w.unsqueeze(2)
+        weight = weight + w.unsqueeze(2)
+    if return_per_camera:
+        return canvas, weight, camera_weight
+    features, camera_weight = normalize_camera_features(canvas, weight, camera_weight)
+    total = camera_weight.sum(1)
+    return (features * camera_weight).sum(1) / total.clamp_min(1e-12), total

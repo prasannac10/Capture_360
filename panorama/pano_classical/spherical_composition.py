@@ -109,7 +109,8 @@ def seam_masks(images, masks):
 
 
 def compose_sphere(paths, records, rotations, width, compensate=True, find_seams=True,
-                   local_alignment=False, seam_width=1024, blend_bands=5, source_regions=None, view_refiner=None):
+                   local_alignment=False, seam_width=1024, blend_bands=5, source_regions=None, view_refiner=None,
+                   reference_index=0):
     """Keep only thumbnails in memory; stream large warps into the blender."""
     if len(paths) == 1:
         image, valid, _ = warp_frame(paths[0], records[0], rotations[0], spherical_rays(width))
@@ -130,13 +131,22 @@ def compose_sphere(paths, records, rotations, width, compensate=True, find_seams
     fields = [None] * len(paths)
     alignment_report = {'method': 'disabled'}
     if local_alignment or view_refiner is not None:
-        from .local_alignment import align_views, remap_local
+        from .local_alignment import align_views, remap_local, protect_view_centres
         LOGGER.warning('Estimating bounded local alignment for %d views', len(paths))
         fields, alignment_report = (view_refiner.align(small_images, valid_masks, qualities)
-                                    if view_refiner is not None else align_views(small_images, valid_masks, qualities))
+                                    if view_refiner is not None else align_views(small_images, valid_masks, qualities,
+                                                                               reference_index=reference_index))
+        if view_refiner is not None:
+            fields = protect_view_centres(fields, valid_masks, qualities, reference_index)
+            alignment_report.update(reference_index=reference_index, protected_centres=True)
+            alignment_report['frames'][reference_index].update(accepted=False, reason='fixed_reference_view')
+        # Skip even an identity remap for the fixed reference view.
+        fields[reference_index] = None
         LOGGER.warning('Accepted local alignment for %d/%d views',
                        sum(item['accepted'] for item in alignment_report['frames']), len(paths))
         for i, flow in enumerate(fields):
+            if flow is None:
+                continue
             small_images[i], valid_masks[i], qualities[i] = remap_preserving_coverage(
                 small_images[i], valid_masks[i], qualities[i], flow)
     LOGGER.warning('Selecting seams for %d masked views at %dx%d', len(paths), seam_width, seam_width // 2)

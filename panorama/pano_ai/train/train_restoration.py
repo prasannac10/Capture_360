@@ -17,9 +17,11 @@ from ..models.color_enhance import ColorEnhancementUNet
 from ..models.glare_removal import GlareRemovalUNet
 from ..models.nadir_zenith import NadirZenithInpainter
 from ..models.advanced_corrections import GhostRemovalUNet
-from ..models.combined_restoration import CombinedRestorationUNet
+from ..models.combined_restoration import CombinedRestorationUNet, COMBINED_CONTRACT
 from ..data.paired_panorama import PairedPanoramaDataset
-from .restoration import evaluate, train_one_epoch
+from .restoration import evaluate, evaluate_identity, train_one_epoch
+from .restoration_loss import loss_settings
+from .logging import TrainingLogger
 
 MODELS = {
     "combined": CombinedRestorationUNet,
@@ -61,7 +63,8 @@ def main(argv=None):
         raise ValueError('resume and finetune are mutually exclusive')
     def dataset(path):
         size = tuple(cfg.get('input_size', [256, 512]))
-        return (PairedPanoramaDataset(path, size, cfg.get('crops_per_scene', 12), random_crops=path == args.data) if args.stage == 'combined'
+        return (PairedPanoramaDataset(path, size, cfg.get('crops_per_scene', 12), random_crops=path == args.data,
+                                     changed_crop_probability=cfg.get('changed_crop_probability', .5)) if args.stage == 'combined'
                 else CorrectionPairDataset(path, args.stage, size))
     if args.stage == 'combined' and not args.val_data:
         raise ValueError('Combined training requires --val-data with separate held-out scene IDs')
@@ -100,9 +103,10 @@ def main(argv=None):
         raise ValueError('checkpoint_selection=mobile requires real mobile validation pairs')
     channel_key = 'base_channels' if args.stage == 'ghost_removal' else 'channels'
     model = MODELS[args.stage](**{channel_key: cfg.get("base_channels", 32)})
+    if args.stage == 'combined':
+        model.loss_settings = loss_settings(cfg.get('loss'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    mobile_baseline = evaluate(torch.nn.Identity().to(device), mobile_loader, device, stage='combined') if mobile_loader is not None else None
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.get("lr", 1e-4),
@@ -117,7 +121,7 @@ def main(argv=None):
     if finetune:
         finetune = (Path(args.config).resolve().parent / finetune).resolve()
         source = torch.load(finetune, map_location=device, weights_only=False)
-        contract = 'paired_panorama_restoration_v1' if args.stage == 'combined' else 'native_masked_restoration_v1'
+        contract = COMBINED_CONTRACT if args.stage == 'combined' else 'native_masked_restoration_v1'
         if (source.get('task') != args.stage or source.get('contract') != contract
                 or source.get('channels') != cfg.get('base_channels', 32)):
             raise ValueError('Fine-tuning checkpoint task, contract or channels mismatch')
@@ -128,11 +132,15 @@ def main(argv=None):
     if resume:
         resume = (Path(args.config).resolve().parent / resume).resolve()
         state = torch.load(resume, map_location=device, weights_only=False)
-        contract = 'paired_panorama_restoration_v1' if args.stage == 'combined' else 'native_masked_restoration_v1'
+        contract = COMBINED_CONTRACT if args.stage == 'combined' else 'native_masked_restoration_v1'
         if (state.get('task') != args.stage or state.get('contract') != contract
                 or state.get('channels') != cfg.get('base_channels', 32)
                 or state.get('checkpoint_selection') != selection):
             raise ValueError('Resume checkpoint task, contract, channels or selection mismatch')
+        if args.stage == 'combined' and state.get('loss_settings') != model.loss_settings:
+            raise ValueError('Resume loss settings mismatch; use finetune to change the objective')
+        if args.stage == 'combined' and state.get('changed_crop_probability', .5) != cfg.get('changed_crop_probability', .5):
+            raise ValueError('Resume changed_crop_probability mismatch; use finetune to change sampling')
         start_epoch = int(state['epoch'])
         if not 0 < start_epoch < cfg.get('epochs', 20):
             raise ValueError('epochs must exceed the completed checkpoint epoch')
@@ -152,18 +160,33 @@ def main(argv=None):
         # Preserve the selected checkpoint even if later epochs do not improve.
         save_checkpoint(best_state, os.path.join(args.out, f"{args.stage}_best.pt"))
     initial_parameter = next(model.parameters()).detach().clone()
+    logger = TrainingLogger(args.out, args.stage, model, optimizer, cfg,
+                            device=str(device), start_epoch=start_epoch,
+                            epochs=cfg.get('epochs', 20), batch_size=bs,
+                            base_channels=cfg.get('base_channels', 32),
+                            input_size=cfg.get('input_size', [256, 512]),
+                            train_samples=len(train_ds), validation_samples=len(val_ds),
+                            loss_settings=getattr(model, 'loss_settings', None),
+                            train_loss_definition='weighted structural objective' if args.stage == 'combined' else 'stage objective',
+                            validation_loss_definition='plain L1' if args.stage == 'combined' else 'stage objective',
+                            resumed_from=str(resume) if resume else None,
+                            finetuned_from=str(finetune) if finetune else None)
+    # Baseline loading must not advance the training sampler's RNG after resume.
+    with torch.random.fork_rng(devices=[]):
+        paired_baseline = evaluate_identity(vloader, device) if args.stage == 'combined' else None
+        mobile_baseline = evaluate_identity(mobile_loader, device) if mobile_loader is not None else None
+    logger.write('baseline', paired=paired_baseline, mobile=mobile_baseline)
     for epoch in range(start_epoch, cfg.get("epochs", 20)):
+        model.last_train_metrics = {}
         loss = train_one_epoch(model, loader, optimizer, device, stage=args.stage)
         metrics = evaluate(model, vloader, device, stage=args.stage)
         mobile_metrics = evaluate(model, mobile_loader, device, stage=args.stage) if mobile_loader is not None else None
         score = (mobile_metrics if selection == 'mobile' else metrics)['loss']
         if not torch.isfinite(torch.tensor(score)):
             raise ValueError('Non-finite validation score')
-        print(
-            f"epoch {epoch + 1} | train={loss:.6f} | val={metrics['loss']:.6f} | psnr={metrics['psnr']:.3f} | ssim={metrics['ssim']:.4f}"
-        )
-        if mobile_metrics is not None:
-            print(f"mobile_val={mobile_metrics['loss']:.6f} selection={selection}")
+        training_metrics = dict(model.last_train_metrics, loss=loss)
+        logger.epoch(epoch + 1, optimizer, training_metrics, metrics, mobile_metrics,
+                     checkpoint_selection=selection, selection_loss=score)
         state = {
             "model": model.state_dict(),
             "finetuned_from": str(finetune) if finetune else None,
@@ -173,11 +196,17 @@ def main(argv=None):
                     'cuda': torch.cuda.get_rng_state_all() if device.type == 'cuda' else None},
             "parameter_change_l1": float((next(model.parameters()).detach() - initial_parameter).abs().sum()),
             "task": args.stage,
-            "contract": "paired_panorama_restoration_v1" if args.stage == 'combined' else "native_masked_restoration_v1",
+            "contract": COMBINED_CONTRACT if args.stage == 'combined' else "native_masked_restoration_v1",
+            "loss_settings": getattr(model, 'loss_settings', None),
+            "changed_crop_probability": cfg.get('changed_crop_probability', .5) if args.stage == 'combined' else None,
             "channels": cfg.get("base_channels", 32),
             "optimizer": optimizer.state_dict(),
             "epoch": epoch + 1,
             "metrics": metrics,
+            "train_metrics": training_metrics,
+            "learning_rates": logger.learning_rates(optimizer),
+            "paired_baseline": paired_baseline,
+            "paired_beats_baseline_l1": metrics['loss'] < paired_baseline['loss'] if paired_baseline is not None else None,
             "mobile_metrics": mobile_metrics,
             "mobile_baseline": mobile_baseline,
             "mobile_beats_baseline_l1": mobile_metrics['loss'] < mobile_baseline['loss'] if mobile_metrics is not None else None,

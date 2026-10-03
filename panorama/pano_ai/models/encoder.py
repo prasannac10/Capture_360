@@ -21,6 +21,17 @@ class ImageEncoder(nn.Module):
         self.feature_stride = 8
         self.register_buffer('input_mean', torch.tensor([.485, .456, .406]).view(1, 3, 1, 1), persistent=False)
         self.register_buffer('input_std', torch.tensor([.229, .224, .225]).view(1, 3, 1, 1), persistent=False)
+        self.train(self.training)
+
+    def train(self, mode=True):
+        super().train(mode)
+        # Small tile batches vary greatly in sky/ground content. Keep pretrained
+        # running statistics fixed across tiles and across the two encoder passes.
+        # Affine BN parameters still receive gradients.
+        for layer in self.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.eval()
+        return self
 
     def forward(self, x):
         return self.projection(self.backbone((x - self.input_mean) / self.input_std))

@@ -1,0 +1,27 @@
+# Train AI stitching first, then the separate combined correction model.
+# Requires BOTH calibrated panorama scenes and reviewed correction pairs.
+# Paths resolve relative to this file. Keep physical scenes in one split.
+dataset_root: ../../../../outputs/training_bundle
+cache_dir: ../../../../outputs/dataset_cache
+output_dir: ../../../../outputs/stitching_correction_training
+pipeline_config: ../../../stitching/config.yaml
+seed: 42
+cpu_threads: 4
+epochs: 20
+tasks: [panorama, combined]
+panorama:
+  training:
+    batch_size: 1
+    tile_batch_size: 4
+combined:
+  # V2: spatial cleanup/detail supervision, not only color matching.
+  loss: {l1: 1.0, ssim: 0.2, gradient: 0.2, multiscale: 0.1, changed_regions: 2.0}
+  input_size: [1024, 1024]
+  crops_per_scene: 12
+  changed_crop_probability: 0.5
+  base_channels: 32
+  batch_size: 1
+  lr: 0.0001
+mobile_validation:
+  enabled: false
+  path: restoration/mobile_val

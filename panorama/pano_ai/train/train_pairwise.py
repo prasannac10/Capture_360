@@ -62,6 +62,7 @@ def task_loss(model, batch):
 
 
 def main(argv=None):
+    from .logging import TrainingLogger
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--task', choices=('alignment', 'blending'), required=True)
     parser.add_argument('--train', required=True)
@@ -83,6 +84,9 @@ def main(argv=None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     destination = Path(args.out)
     destination.mkdir(parents=True, exist_ok=True)
+    logger = TrainingLogger(destination, args.task, model, optimizer, vars(args), device=str(device),
+                            train_samples=len(loaders[0].dataset), validation_samples=len(loaders[1].dataset),
+                            loss_definition='supervised pairwise objective; RGB quality metrics do not apply')
     best = float('inf')
     for epoch in range(args.epochs):
         metrics = []
@@ -101,12 +105,14 @@ def main(argv=None):
                         optimizer.step()
                     total += loss.item()
             metrics.append(total / len(loader))
-        print(f'epoch={epoch + 1} train={metrics[0]:.6f} val={metrics[1]:.6f}')
+        logger.epoch(epoch + 1, optimizer, {'loss': metrics[0]}, {'loss': metrics[1]})
         if metrics[1] < best:
             best = metrics[1]
             torch.save(dict(model=model.state_dict(), task=args.task, contract='geometric_pairs_v1',
                             channels=args.channels, max_displacement=8., work_width=1024,
                             epoch=epoch + 1, val_loss=best,
+                            train_metrics={'loss': metrics[0]}, validation_metrics={'loss': metrics[1]},
+                            learning_rates=logger.learning_rates(optimizer),
                             parameter_change_l1=float((next(model.parameters()).detach() - initial_parameter).abs().sum())),
                        destination / f'{args.task}_best.pt')
 

@@ -7,6 +7,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from .tiling import tile_specs
+from .exposure import estimate_exposure, exposure_settings, apply_exposure
 
 
 class VariableTilePanoramaDataset(Dataset):
@@ -21,6 +22,7 @@ class VariableTilePanoramaDataset(Dataset):
         max_tiles_per_frame=None,
         input_config=None,
         profile='auto',
+        exposure_config=None,
     ):
         self.root = Path(root)
         self.has_gt = has_gt
@@ -30,6 +32,9 @@ class VariableTilePanoramaDataset(Dataset):
         self.max_frames = max_frames
         self.max_tiles_per_frame = max_tiles_per_frame
         self.input_config, self.profile = input_config, profile
+        self.exposure_config = exposure_settings(exposure_config if exposure_config is not None
+                                                else (input_config or {}).get('exposure_compensation'))
+        self._exposure_cache = {}
         if not self.root.exists():
             raise FileNotFoundError(self.root)
         self.scenes = sorted(
@@ -85,6 +90,14 @@ class VariableTilePanoramaDataset(Dataset):
             "capture": capture,
             "scene": scene.name,
         }
+        # Reuse per-scene photometry across epochs, invalidating on source or calibration edits.
+        fingerprint = (tuple((str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in files),
+                       out['camera_params'].numpy().tobytes(), poses.numpy().tobytes())
+        cached = self._exposure_cache.get(str(scene))
+        if cached is None or cached[0] != fingerprint:
+            cached = (fingerprint, estimate_exposure(out, self.exposure_config))
+            self._exposure_cache[str(scene)] = cached
+        out['exposure'] = cached[1]
         if self.has_gt:
             gp = scene / "panorama.png"
             if not gp.exists():
@@ -115,10 +128,10 @@ def iter_tile_batches(sample, tile_size=1024, overlap=128, batch_size=4):
                         mode = "reflect" if min(arr.shape[:2]) > 1 else "edge"
                         arr = np.pad(arr, ((0, ph), (0, pw), (0, 0)), mode=mode)
                         crop = Image.fromarray(arr)
-                    tiles.append(
-                        torch.from_numpy(np.array(crop, copy=True)).permute(2, 0, 1).float()
-                        / 255.0
-                    )
+                    rgb = np.array(crop, dtype=np.float32, copy=True) / 255.
+                    gain = sample.get('exposure', {}).get('gains', [1.] * len(sample['frame_paths']))[fi]
+                    rgb = apply_exposure(rgb, gain)
+                    tiles.append(torch.from_numpy(rgb).permute(2, 0, 1))
             yield fi, torch.stack(tiles), torch.tensor(
                 [[x, y] for x, y, _, _ in chosen], dtype=torch.float32
             ), torch.tensor([[w, h] for _, _, w, h in chosen], dtype=torch.float32)
