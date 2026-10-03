@@ -19,6 +19,7 @@ class ImageEncoder(nn.Module):
             nn.Conv2d(128, dim, 1, bias=False), nn.BatchNorm2d(dim), nn.GELU()
         )
         self.feature_stride = 8
+        self.checkpoint_gradients = False
         self.register_buffer('input_mean', torch.tensor([.485, .456, .406]).view(1, 3, 1, 1), persistent=False)
         self.register_buffer('input_std', torch.tensor([.229, .224, .225]).view(1, 3, 1, 1), persistent=False)
         self.train(self.training)
@@ -34,4 +35,9 @@ class ImageEncoder(nn.Module):
         return self
 
     def forward(self, x):
-        return self.projection(self.backbone((x - self.input_mean) / self.input_std))
+        normalized = (x - self.input_mean) / self.input_std
+        if self.checkpoint_gradients and self.training and torch.is_grad_enabled():
+            from torch.utils.checkpoint import checkpoint
+            return checkpoint(lambda value: self.projection(self.backbone(value)),
+                              normalized, use_reentrant=False)
+        return self.projection(self.backbone(normalized))

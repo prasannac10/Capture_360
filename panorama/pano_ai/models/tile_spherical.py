@@ -7,6 +7,14 @@ import torch.nn.functional as F
 PANORAMA_CONTRACT = 'panorama_exposure_blending_v4'
 
 
+def panorama_contract(detail_mode='features'):
+    if detail_mode == 'features':
+        return PANORAMA_CONTRACT
+    if detail_mode == 'rgb_residual':
+        return 'panorama_native_rgb_residual_v6'
+    raise ValueError('Unknown panorama detail mode')
+
+
 def normalize_camera_features(canvas, tile_weight, camera_weight):
     """Normalize tiles before applying the camera's footprint weight."""
     weight = camera_weight * (tile_weight > 0).to(camera_weight.dtype)
@@ -66,11 +74,22 @@ def project_tile_features(
             return_per_camera)
 
 
-def project_camera_pixels(image_size, camera_params, rotations, pano_h, pano_w):
+def project_camera_pixels(image_size, camera_params, rotations, pano_h, pano_w, region=None):
     """Shared camera projection for feature fusion and overlap photometry (float32)."""
     b, n = image_size.shape[:2]
     dev, dtype = image_size.device, image_size.dtype
-    world = equirect_dirs(pano_h, pano_w, dev, dtype).view(1, 1, pano_h, pano_w, 3)
+    if region is None:
+        world = equirect_dirs(pano_h, pano_w, dev, dtype)
+    else:
+        top, left, height, width = region
+        lon = ((torch.arange(left, left + width, device=dev, dtype=dtype) + .5) / pano_w - .5) * (2 * math.pi)
+        rows = torch.arange(top, top + height, device=dev, dtype=dtype).clamp(0, pano_h - 1)
+        lat = (.5 - (rows + .5) / pano_h) * math.pi
+        lat, lon = torch.meshgrid(lat, lon, indexing='ij')
+        world = torch.stack((torch.cos(lat) * torch.sin(lon), -torch.sin(lat),
+                             torch.cos(lat) * torch.cos(lon)), -1)
+    rh, rw = world.shape[:2]
+    world = world.view(1, 1, rh, rw, 3)
     dirs = torch.einsum(
         "bnij,bnhwj->bnhwi", rotations.transpose(-1, -2), world.expand(b, n, -1, -1, -1)
     )

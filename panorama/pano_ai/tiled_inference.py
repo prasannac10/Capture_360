@@ -11,7 +11,8 @@ from panorama.stitching.profiles import validate_frame_set
 from .data.tile_dataset import VariableTilePanoramaDataset, iter_tile_batches
 from .highres_correction import HighResolutionCorrectionPipeline, validate_mask
 from .models.panorama_model import PanoramaModel
-from .models.tile_spherical import PANORAMA_CONTRACT
+from .models.tile_spherical import panorama_contract
+from .data.native_rgb import NativeRGBSource
 from .data.exposure import exposure_settings
 
 
@@ -39,10 +40,6 @@ def run_tiled_inference(
     defects = load_defect_masks(scene, shape)
     correction_mask = union_masks(defects, ('missing_coverage', 'photographer', 'other'))
     auxiliary = {'ghost_mask': defects.get('moving_objects')}
-    if 'nadir_zenith' in correction_pipeline.models:
-        validate_mask(correction_mask, shape)
-    if 'ghost_removal' in correction_pipeline.models:
-        validate_mask(auxiliary.get('ghost_mask'), shape)
     dataset = VariableTilePanoramaDataset(
         scene.parent,
         False,
@@ -77,11 +74,18 @@ def run_tiled_inference(
     state = torch.load(
         checkpoint_path.resolve(), map_location=device, weights_only=False
     )
-    if state.get('contract') != PANORAMA_CONTRACT and not inference_cfg.get('allow_legacy_checkpoint', False):
-        raise ValueError('Checkpoint predates exposure-matched feather blending. Retrain, or explicitly set inference.allow_legacy_checkpoint for comparison only.')
+    detail = model_cfg.get('detail', {})
+    detail_mode = detail.get('mode', 'features')
+    expected_contract = panorama_contract(detail_mode)
+    trained_detail = state.get('config', {}).get('model', {}).get('detail', {})
+    if (trained_detail.get('mode', 'features') != detail_mode
+            or (detail_mode == 'rgb_residual' and trained_detail.get('residual_scale', .1) != detail.get('residual_scale', .1))):
+        raise ValueError('Panorama detail architecture differs from checkpoint; retrain rgb_residual or select the checkpoint architecture explicitly')
+    if state.get('contract') != expected_contract and not inference_cfg.get('allow_legacy_checkpoint', False):
+        raise ValueError(f'Checkpoint contract does not match {expected_contract}. Retrain, or explicitly set inference.allow_legacy_checkpoint for a same-architecture comparison only.')
     trained_exposure = exposure_settings(state.get('config', {}).get('input', {}).get('exposure_compensation'))
     inference_exposure = exposure_settings(config['input'].get('exposure_compensation'))
-    if state.get('contract') == PANORAMA_CONTRACT and trained_exposure != inference_exposure:
+    if state.get('contract') == expected_contract and trained_exposure != inference_exposure:
         raise ValueError('Exposure preprocessing must match the training checkpoint configuration')
     model = PanoramaModel(
         model_cfg["feature_dim"],
@@ -93,11 +97,14 @@ def run_tiled_inference(
         model_cfg["attention"]["heads"],
         model_cfg["attention"].get("layers", 2),
         inference_cfg.get("output_tile", 1024),
+        detail_mode=detail_mode,
+        residual_scale=detail.get('residual_scale', .1),
     ).to(device)
     weights = state.get('ema') if isinstance(state, dict) and inference_cfg.get('use_ema', True) else None
     model.load_state_dict(weights if weights is not None else state.get("model", state), strict=True)
     model.eval()
     batch_size = int(inference_cfg.get("tile_batch_size", 4))
+    source_sampler = NativeRGBSource(sample, coverage_size=shape) if detail_mode == 'rgb_residual' else None
     with torch.inference_mode():
         prediction = model.forward_scene(
             lambda: iter_tile_batches(
@@ -107,6 +114,7 @@ def run_tiled_inference(
             sample["camera_params"],
             sample["poses"],
             batch_size,
+            source_sampler=source_sampler,
         )[0]
     initial = (
         (prediction.permute(1, 2, 0).cpu().numpy().clip(0, 1) * 255)
@@ -122,6 +130,16 @@ def run_tiled_inference(
     Image.fromarray(initial).save(
         output / "initial_panorama.tiff", compression="tiff_deflate"
     )
+    if source_sampler is not None:
+        coverage = source_sampler.coverage_map.numpy()
+        Image.fromarray(coverage.astype(np.uint8) * 255).save(output / 'coverage_mask.png')
+        defects = load_defect_masks(scene, shape, coverage=coverage)
+        correction_mask = union_masks(defects, ('missing_coverage', 'photographer', 'other'))
+        auxiliary = {'ghost_mask': defects.get('moving_objects')}
+    if 'nadir_zenith' in correction_pipeline.models:
+        validate_mask(correction_mask, shape)
+    if 'ghost_removal' in correction_pipeline.models:
+        validate_mask(auxiliary.get('ghost_mask'), shape)
     corrected, corrections = correction_pipeline.run(
         initial,
         correction_mask,
@@ -147,7 +165,8 @@ def run_tiled_inference(
         "output_resolution": [model_cfg["output_width"], model_cfg["output_height"]],
         "checkpoint": str(checkpoint_path),
         "checkpoint_contract": state.get('contract'),
-        "inference_contract": PANORAMA_CONTRACT,
+        "inference_contract": expected_contract,
+        "detail_mode": detail_mode,
         "exposure": sample['exposure'],
         "weights": 'ema' if weights is not None else 'model',
         "device": str(device),
