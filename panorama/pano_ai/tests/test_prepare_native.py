@@ -47,3 +47,16 @@ class NativePreparationTests(unittest.TestCase):
                 prepare(root, root / 'prepared', target_size=(64, 32))
             with self.assertRaises(ValueError):
                 prepare(root, root / 'wrong_size')
+
+    def test_existing_jpeg_needs_no_raw_decoder_and_is_copied_exactly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'images').mkdir()
+            source = root / 'images/photo.jpeg'
+            Image.new('RGB', (96, 64), (20, 80, 150)).save(source)
+            Image.new('RGB', (64, 32)).save(root / 'Stitched.jpg')
+            with patch('panorama.pano_ai.data.prepare_native.decode_dng', side_effect=AssertionError('RAW decoder called')):
+                report = prepare(root, root / 'prepared', target_size=(64, 32))
+            self.assertEqual(source.read_bytes(), (root / 'prepared/images/photo.jpg').read_bytes())
+            self.assertEqual(report['frames'][0]['width'], 96)
+            self.assertEqual(report['frames'][0]['height'], 64)
