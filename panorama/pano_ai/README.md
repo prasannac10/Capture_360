@@ -959,3 +959,9 @@ not been validated on the supplied real scene locally because rawpy is absent.
 The default drone profile permits at most 30 frames; the supplied 33-frame scene
 needs an explicitly adjusted frame limit after calibration. Train with the default
 `rgb_residual` mode and a new v6 checkpoint.
+
+Existing full-resolution `.jpg`/`.jpeg` frames in `images/` are accepted by
+`prepare_native` and copied byte-for-byte, with no resize or recompression.
+A JPEG-only scene needs neither DNG files nor rawpy. Calibration must match
+the JPEG pixel dimensions and orientation. Duplicate JPEG/DNG stems are rejected;
+select one source version per frame.

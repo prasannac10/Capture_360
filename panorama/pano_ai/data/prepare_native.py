@@ -26,9 +26,9 @@ def decode_dng(path):
 def prepare(scene, output, capture_path=None, target_size=(12000, 6000), pts_path=None):
     scene, output = Path(scene).resolve(), Path(output).resolve()
     files = sorted((scene / 'images').glob('*'))
-    files = [p for p in files if p.is_file() and p.suffix.lower() == '.dng']
+    files = [p for p in files if p.is_file() and p.suffix.lower() in {'.dng', '.jpg', '.jpeg'}]
     if not files:
-        raise ValueError('Expected DNG photos in scene/images')
+        raise ValueError('Expected full-resolution JPEG or DNG photos in scene/images')
     if len({p.stem.lower() for p in files}) != len(files):
         raise ValueError('Duplicate image stems')
     reference = scene / 'Stitched.jpg'
@@ -42,15 +42,22 @@ def prepare(scene, output, capture_path=None, target_size=(12000, 6000), pts_pat
     from .ptgui_calibration import PTGuiCalibration
     pts = PTGuiCalibration(pts_path) if pts_path else None
     if pts and set(pts.records) != {p.stem.lower() for p in files}:
-        raise ValueError('PTGui must describe exactly the supplied RAW frames')
+        raise ValueError('PTGui must describe exactly the supplied frames')
     capture = load_capture(Path(capture_path).resolve()) if capture_path else None
     calibrated = {Path(f.filename).stem.lower(): f for f in capture.frames} if capture else {}
     if capture and set(calibrated) != {p.stem.lower() for p in files}:
-        raise ValueError('Calibration must describe exactly the supplied RAW frames')
+        raise ValueError('Calibration must describe exactly the supplied frames')
     (output / 'images').mkdir(parents=True)
     rows, frames = [], []
     for path in files:
-        array = decode_dng(path)
+        is_jpeg = path.suffix.lower() in {'.jpg', '.jpeg'}
+        if is_jpeg:
+            with Image.open(path) as image:
+                if image.format != 'JPEG':
+                    raise ValueError(f'Expected JPEG data: {path}')
+                array = np.array(image.convert('RGB'), copy=True)
+        else:
+            array = decode_dng(path)
         if array.dtype != np.uint8 or array.ndim != 3 or array.shape[2] != 3:
             raise ValueError('RAW decoder must return uint8 sRGB')
         zoom = None
@@ -61,13 +68,17 @@ def prepare(scene, output, capture_path=None, target_size=(12000, 6000), pts_pat
         if capture:
             frame = calibrated[path.stem.lower()]
             if (frame.width, frame.height) != (w, h):
-                raise ValueError('Calibration dimensions must match full-resolution RAW decoding; do not reuse half-size intrinsics')
+                raise ValueError('Calibration dimensions must match full-resolution image dimensions; do not reuse half-size intrinsics')
             if frame.depth:
                 raise ValueError('Depth assets require separate preparation')
             frames.append(replace(frame, filename=filename))
         if pts:
             frames.append(replace(frame, filename=filename))
-        Image.fromarray(array).save(output / filename, format='JPEG', quality=100, subsampling=0)
+        if is_jpeg:
+            # Preserve existing JPEG bytes without another compression pass.
+            shutil.copy2(path, output / filename)
+        else:
+            Image.fromarray(array).save(output / filename, format='JPEG', quality=100, subsampling=0)
         rows.append(dict(source=str(path), filename=filename, width=w, height=h, rectification_zoom=zoom))
     # Preserve reference bytes: converting JPEG to PNG adds no recovered detail.
     shutil.copy2(reference, output / 'Stitched.jpg')
