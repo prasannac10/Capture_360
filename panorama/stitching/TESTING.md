@@ -419,3 +419,28 @@ requires an appropriate trained correction checkpoint or additional capture cove
 the stitching decoder does not invent missing sky. Native exposure gains now use
 the same linear-light transfer function as encoder preprocessing. Retrain the native
 model after this preprocessing change; previous non-unity gain runs are not comparable.
+
+### Full-resolution RAW preparation
+
+Install `rawpy` in the preparation environment, then run:
+
+```powershell
+python -m panorama.pano_ai.data.prepare_native --scene "C:/data/raw/scene_0001" --output "C:/data/prepared/scene_0001"
+```
+
+This new command decodes DNGs with `half_size=False`, no automatic orientation
+rotation, camera white balance and no automatic brightness. It saves full-size
+full-resolution 8-bit sRGB JPEGs (quality 100, 4:4:4; JPEG compression remains lossy), copies the original 12000?6000 `Stitched.jpg` without
+resizing, retains `Panorama.pts`, and never deletes source DNGs. Output must be a
+new directory. `Edited.jpg` is not used. A failed preparation may leave partial
+output; use a new directory on retry.
+
+Supply `--capture /path/to/capture.json` only when its calibration already matches
+the full-size, unrotated decoded RGB pixels. Half-size calibration is rejected.
+Without calibration, `preparation.json` explicitly marks the result as requiring
+calibration before training. This command does not convert PTGui lens distortion
+or poses; verified calibration/undistortion remains required. RAW decoding has
+not been validated on the supplied real scene locally because rawpy is absent.
+The default drone profile permits at most 30 frames; the supplied 33-frame scene
+needs an explicitly adjusted frame limit after calibration. Train with the default
+`rgb_residual` mode and a new v6 checkpoint.
