@@ -21,9 +21,15 @@ def main():
         split = 'train' if i < 2 else 'val'
         folder = root / 'dataset' / 'restoration' / split / f'synthetic_{i}'
         folder.mkdir(parents=True)
-        image = np.random.default_rng(i).integers(30, 170, (64, 128, 3), dtype=np.uint8)
+        target = np.random.default_rng(i).integers(30, 170, (64, 128, 3), dtype=np.uint8)
+        # Exercise spatial repairs as well as photometry: an exposure step and
+        # a locally doubled edge/texture region, with a known clean target.
+        image = target.copy()
+        image[:, 64:] = np.rint(image[:, 64:].astype(np.float32) * .75).astype(np.uint8)
+        ghost = np.rint(.5 * target.astype(np.float32) + .5 * np.roll(target, 3, axis=1)).astype(np.uint8)
+        image[20:44, 40:88] = ghost[20:44, 40:88]
         Image.fromarray(image).save(folder / 'before.png')
-        Image.fromarray(image + 20).save(folder / 'after.png')
+        Image.fromarray(target).save(folder / 'after.png')
         (folder / 'pair.json').write_text(json.dumps(dict(scene_id=f'synthetic_{i}', before='before.png', after='after.png',
             projection='equirectangular', alignment_verified=True)), encoding='utf-8')
     job = dict(dataset_root='dataset', output_dir='training',
@@ -42,7 +48,7 @@ def main():
     if output.shape != image.shape or metadata['applied_stages'] != ['combined']:
         raise RuntimeError('Combined checkpoint inference did not complete')
     Image.fromarray(image).save(root / 'inference' / 'before.png')
-    Image.fromarray(image + 20).save(root / 'inference' / 'target.png')
+    Image.fromarray(target).save(root / 'inference' / 'target.png')
     report.update(status='passed', scenes=3, train_scenes=2, validation_scenes=1,
                    checkpoint_reload=True, mask_required=False, quality_claim='None: synthetic execution test only')
     (root / 'smoke_report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')

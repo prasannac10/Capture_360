@@ -14,11 +14,14 @@ from .models.panorama_model import PanoramaModel
 from .models.tile_spherical import PANORAMA_CONTRACT
 from .utils.ema import EMA
 from .train.panorama_loss import PanoramaLoss
+from .train.metrics import image_quality
+from .train.logging import TrainingLogger
 from panorama.stitching.profiles import validate_frame_set
 
 
 def run_scene(
-    model, sample, device, tile_batch_size, train, optimizer=None, scaler=None, criterion=None, ema=None
+    model, sample, device, tile_batch_size, train, optimizer=None, scaler=None, criterion=None, ema=None,
+    return_metrics=False,
 ):
     # tile_size/overlap are supplied by caller through model attributes in the closure below.
     if train:
@@ -41,6 +44,7 @@ def run_scene(
         loss = criterion(pred, gt) if criterion is not None else F.l1_loss(pred, gt)
         if not torch.isfinite(loss):
             raise ValueError('Non-finite panorama training loss')
+        quality = image_quality(pred, gt) if return_metrics else None
         if train:
             if scaler and scaler.is_enabled():
                 old_scale = scaler.get_scale()
@@ -57,7 +61,8 @@ def run_scene(
                 stepped = True
             if ema is not None and stepped:
                 ema.update(model)
-    return float(loss.detach().item())
+    value = float(loss.detach().item())
+    return dict(quality, loss=value) if return_metrics else value
 
 
 def main(argv=None):
@@ -123,6 +128,11 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     best = float("inf")
     epochs = a.epochs or tr["epochs"]
+    logger = TrainingLogger(out, 'panorama', model, opt, cfg, device=str(dev), epochs=epochs,
+                            train_scenes=len(train), validation_scenes=len(val) if val else 0,
+                            mixed_precision=scaler.is_enabled(),
+                            validation_weights='ema' if ema else 'model',
+                            loss_definition='weighted panorama objective; l1 is logged separately')
 
     def prep(s):
         s = dict(s)
@@ -150,22 +160,21 @@ def main(argv=None):
 
     for ep in range(1, epochs + 1):
         model.train()
-        tl = sum(
-            run_scene(model, prep(train[i]), dev, tile_bs, True, opt, scaler, criterion, ema)
+        train_rows = [
+            run_scene(model, prep(train[i]), dev, tile_bs, True, opt, scaler, criterion, ema, return_metrics=True)
             for i in torch.randperm(len(train)).tolist()
-        ) / max(1, len(train))
+        ]
+        training_metrics = {key: sum(row[key] for row in train_rows) / len(train_rows) for key in train_rows[0]}
+        tl = training_metrics['loss']
         if ema:
             ema.copy_to(model)
         model.eval()
-        vl = (
-            sum(
-                run_scene(model, prep(val[i]), dev, tile_bs, False, criterion=criterion)
-                for i in range(len(val))
-            )
-            / max(1, len(val))
-            if val
-            else tl
-        )
+        validation_metrics = None
+        if val:
+            val_rows = [run_scene(model, prep(val[i]), dev, tile_bs, False, criterion=criterion,
+                                  return_metrics=True) for i in range(len(val))]
+            validation_metrics = {key: sum(row[key] for row in val_rows) / len(val_rows) for key in val_rows[0]}
+        vl = validation_metrics['loss'] if validation_metrics else tl
         if ema:
             ema.restore(model)
         state = {
@@ -177,6 +186,9 @@ def main(argv=None):
             "epoch": ep,
             "train_loss": tl,
             "val_loss": vl,
+            "train_metrics": training_metrics,
+            "validation_metrics": validation_metrics,
+            "learning_rates": logger.learning_rates(opt),
             "ema": ema.shadow if ema else None,
             "config": cfg,
         }
@@ -184,7 +196,7 @@ def main(argv=None):
         if vl < best:
             best = vl
             torch.save(state, out / tr["best_model_name"])
-        print(f"epoch={ep}/{epochs} train={tl:.6f} val={vl:.6f}")
+        logger.epoch(ep, opt, training_metrics, validation_metrics)
 
 
 if __name__ == "__main__":

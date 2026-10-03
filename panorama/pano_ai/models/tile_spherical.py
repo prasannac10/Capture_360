@@ -4,7 +4,7 @@ import math
 import torch
 import torch.nn.functional as F
 
-PANORAMA_CONTRACT = 'panorama_camera_blending_v3'
+PANORAMA_CONTRACT = 'panorama_exposure_blending_v4'
 
 
 def normalize_camera_features(canvas, tile_weight, camera_weight):
@@ -66,20 +66,10 @@ def project_tile_features(
             return_per_camera)
 
 
-def _project_tile_features(
-    tile_features,
-    tile_xy,
-    tile_wh,
-    image_size,
-    camera_params,
-    rotations,
-    pano_h,
-    pano_w,
-    feature_stride=8,
-    return_per_camera=False,
-):
-    b, n, k, c, hf, wf = tile_features.shape
-    dev, dtype = tile_features.device, tile_features.dtype
+def project_camera_pixels(image_size, camera_params, rotations, pano_h, pano_w):
+    """Shared camera projection for feature fusion and overlap photometry (float32)."""
+    b, n = image_size.shape[:2]
+    dev, dtype = image_size.device, image_size.dtype
     world = equirect_dirs(pano_h, pano_w, dev, dtype).view(1, 1, pano_h, pano_w, 3)
     dirs = torch.einsum(
         "bnij,bnhwj->bnhwi", rotations.transpose(-1, -2), world.expand(b, n, -1, -1, -1)
@@ -117,6 +107,25 @@ def _project_tile_features(
     # Feather the outer 10% of each image; fisheye coverage also has a circular edge.
     edge = torch.where(pin, edge, torch.minimum(edge, (fov / 2 - theta) / fov))
     camera_weight = (_cosine_edge_weight(edge, .1) * valid).unsqueeze(2)
+    return u, v, valid, camera_weight
+
+
+def _project_tile_features(
+    tile_features,
+    tile_xy,
+    tile_wh,
+    image_size,
+    camera_params,
+    rotations,
+    pano_h,
+    pano_w,
+    feature_stride=8,
+    return_per_camera=False,
+):
+    b, n, k, c, hf, wf = tile_features.shape
+    dev, dtype = tile_features.device, tile_features.dtype
+    u, v, valid, camera_weight = project_camera_pixels(
+        image_size, camera_params, rotations, pano_h, pano_w)
     canvas = torch.zeros(b, n, c, pano_h, pano_w, device=dev, dtype=dtype)
     weight = torch.zeros(b, n, 1, pano_h, pano_w, device=dev, dtype=dtype)
     for i in range(k):

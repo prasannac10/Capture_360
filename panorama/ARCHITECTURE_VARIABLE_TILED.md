@@ -16,12 +16,12 @@ Solid arrows carry data; dotted arrows supply configuration, weights or supervis
 flowchart TD
     frames["Native-resolution source frames"]
     tile["Overlapping source tiles<br/>Original pixel origins and dimensions"]
-    encoder["Shared ResNet18 encoder<br/>Stride-8 feature maps"]
+    encoder["Shared ResNet18 encoder<br/>Fixed BatchNorm statistics; stride-8 features"]
     metadata["Tile position + camera intrinsics<br/>Projection type + camera rotation"]
     tokens["Pooled visual tokens + metadata embeddings"]
     attention["Attention across tile tokens<br/>Contextual tokens + scene token"]
     second["Second streamed encoder pass<br/>Context-gated tile feature maps"]
-    projection["Camera-aware spherical feature projection<br/>Weighted accumulation on feature canvas"]
+    projection["Camera-aware spherical feature projection<br/>Tile feathering + per-camera normalization<br/>Camera footprint feathering"]
     condition["Global scene conditioning"]
     decoder["Multi-scale RGB decoder<br/>Tiled output on a consistent pixel-centre grid"]
     output["Initial stitched RGB panorama<br/>Requested panorama dimensions"]
@@ -30,7 +30,8 @@ flowchart TD
     merge["Blend corrected tiles"]
     final["Final corrected panorama"]
     weights["Validated correction checkpoint"]
-    frames --> tile --> encoder --> tokens --> attention
+    exposure["Calibrated overlap exposure matching<br/>Bounded linear-light gains"]
+    frames --> exposure --> tile --> encoder --> tokens --> attention
     metadata --> tokens
     tile --> second
     attention -.-> second
@@ -45,7 +46,7 @@ This is the default `ai_pipeline.mode: tiled_neural`, implemented by
 [PanoramaModel](pano_ai/models/panorama_model.py). The stitching model has a separate training route
 requiring calibrated source images and aligned reference panoramas; training
 `combined` does not train this decoder. Corrected coordinate conventions require
-compatible `panorama_camera_blending_v3` checkpoints.
+compatible `panorama_exposure_blending_v4` checkpoints.
 
 Streaming limits feature-map memory, but attention still operates over the tile
 tokens. Variable frame counts and tiled decoding do not imply unlimited memory
@@ -75,7 +76,7 @@ flowchart TD
     split["Independent physical scenes<br/>panorama/train and panorama/val"]
     model["Train PanoramaModel<br/>Source tiles to panorama RGB"]
     loss["Reference supervision<br/>L1 + SSIM + perceptual loss"]
-    checkpoint["panorama_tiled_best.pt<br/>panorama_camera_blending_v3"]
+    checkpoint["panorama_tiled_best.pt<br/>panorama_exposure_blending_v4"]
     inference["Stage 1: AI stitching inference"]
     correction["Stage 2: trained correction pipeline"]
     sources --> split --> model --> loss --> checkpoint
@@ -84,12 +85,14 @@ flowchart TD
     inference --> correction
 ```
 
-The correction dataset and training are separate, as shown below. PTGui pairs
-provide correction supervision; they do not supply calibrated stitching scenes.
+The correction dataset and training are separate, as shown below. Use actual
+initial stitching outputs paired with reviewed final panoramas to match deployed
+defects. PTGui pairs can also supply correction supervision; neither supplies
+calibrated stitching scenes on its own.
 
 ```mermaid
 flowchart TD
-    pairs["Reviewed PTGui panorama<br/>+ aligned final corrected panorama"]
+    pairs["Actual initial stitch (or PTGui)<br/>+ aligned reviewed final panorama"]
     manifest["Pair manifest<br/>Physical scene ID, domain, train/val split"]
     package["prepare_pairs<br/>Validate and copy paired images"]
     references["Reviewed full-sphere DSLR/drone<br/>final panoramas"]
@@ -98,7 +101,7 @@ flowchart TD
     dataset["Prepared dataset<br/>restoration/train and restoration/val"]
     storage["Local dataset or S3 snapshot<br/>S3 downloads to local cache"]
     crops["Paired native-coordinate crops<br/>Same locations in before and after<br/>Longitude wrapping"]
-    train["Train combined residual U-Net<br/>Predict corrected RGB; paired L1 loss"]
+    train["Train combined residual U-Net<br/>Pixel + SSIM + gradient + multiscale loss<br/>Emphasize reviewed edited regions"]
     validation["Fixed validation crops<br/>Loss, edge, texture and actual join metrics"]
     mobile["Optional reviewed real-mobile pairs<br/>Separate physical scenes in mobile_val<br/>Compare uncorrected baseline"]
     select["Select best checkpoint<br/>Mobile L1 when enabled<br/>Otherwise ordinary paired validation L1"]
@@ -133,7 +136,7 @@ flowchart TD
     e1["Encoder 1: ConvBlock<br/>32 channels, H x W"]
     e2["MaxPool + Encoder 2<br/>64 channels, H/2 x W/2"]
     e3["MaxPool + Encoder 3<br/>128 channels, H/4 x W/4"]
-    bottleneck["MaxPool + Bottleneck<br/>128 channels, H/8 x W/8"]
+    bottleneck["MaxPool + Bottleneck<br/>Dilated context at rates 1, 2, 4<br/>128 channels, H/8 x W/8"]
     d3["Upsample + concatenate Encoder 3<br/>ConvBlock: 64 channels"]
     d2["Upsample + concatenate Encoder 2<br/>ConvBlock: 32 channels"]
     d1["Upsample + concatenate Encoder 1<br/>ConvBlock: 32 channels"]
@@ -147,14 +150,23 @@ flowchart TD
 ```
 
 Channel counts show the default `base_channels: 32`. Each ConvBlock contains two
-3x3 convolutions with GroupNorm and SiLU. Upsampling is bilinear to the matching
+3x3 convolutions with SiLU and no spatial normalization in v2. Upsampling is bilinear to the matching
 encoder size. The implementation is
 [CombinedRestorationUNet](pano_ai/models/combined_restoration.py) using
 [RestorationUNet](pano_ai/models/restoration_backbone.py).
 Training uses native paired crops; inference processes overlapping tiles and
-blends their outputs. The default training crop is 1024x1024. No mask input is
+uses 160-pixel context halos on a shared pooling lattice, and blends floating-point
+outputs before quantization. The RGB residual head starts at zero (identity).
+The default training crop is 1024x1024. No mask input is
 required for this combined model, and exact preservation of unchanged regions
 is not guaranteed.
+
+Half the training crops target local reviewed edits, with global color offsets
+removed from the sampling map; validation uses fixed target-independent crops.
+Training weights edited regions more strongly and combines L1, local SSIM,
+gradient and multiscale terms. Validation reports unchanged-input baselines and
+selects checkpoints by plain held-out L1. V2 has its own checkpoint contract;
+existing v1 checkpoints load through the original architecture for inference.
 
 ## 4. Alternative: source-preserving geometric stitching
 

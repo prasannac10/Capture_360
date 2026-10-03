@@ -19,6 +19,7 @@ mobile_validation:
   enabled: false
   path: restoration/mobile_val
 combined:
+  loss: {l1: 1.0, ssim: 0.2, gradient: 0.2, multiscale: 0.1, changed_regions: 2.0}
   # Optional: enable only one of resume or finetune; use trusted local checkpoints.
   # Resume restores optimizer/state; epochs is the desired total epoch count.
   # resume: ../../../../outputs/training_pilot/combined/combined_last.pt
@@ -28,6 +29,7 @@ combined:
   # checkpoint_selection: paired
   input_size: [1024, 1024]
   crops_per_scene: 12
+  changed_crop_probability: 0.5
   base_channels: 32
   batch_size: 1
   lr: 0.0001

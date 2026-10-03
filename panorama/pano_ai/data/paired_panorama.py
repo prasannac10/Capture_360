@@ -8,10 +8,15 @@ from torch.utils.data import Dataset
 
 
 class PairedPanoramaDataset(Dataset):
-    def __init__(self, root, input_size=(512, 512), crops_per_scene=12, random_crops=False, required_domain=None):
+    def __init__(self, root, input_size=(512, 512), crops_per_scene=12, random_crops=False, required_domain=None,
+                 changed_crop_probability=.5):
         self.size = tuple(input_size)
         self.crops_per_scene = int(crops_per_scene)
         self.random_crops = random_crops
+        self.changed_crop_probability = float(changed_crop_probability)
+        if not 0 <= self.changed_crop_probability <= 1:
+            raise ValueError('changed_crop_probability must be in [0,1]')
+        self._change_maps = {}
         if len(self.size) != 2 or min(self.size) < 8 or self.crops_per_scene < 1:
             raise ValueError('Require positive crops_per_scene and crop dimensions >=8')
         self.pairs, self.scene_ids = [], set()
@@ -50,6 +55,21 @@ class PairedPanoramaDataset(Dataset):
     def __len__(self):
         return len(self.pairs) * self.crops_per_scene
 
+    def _change_map(self, paths, scene_id):
+        if scene_id not in self._change_maps:
+            previews = []
+            for path in paths:
+                with Image.open(path) as image:
+                    image = image.convert('RGB')
+                    image.thumbnail((256, 128), Image.Resampling.BILINEAR)
+                    previews.append(np.asarray(image, dtype=np.float32) / 255.)
+            difference = previews[1] - previews[0]
+            # Remove a global color offset so it does not dominate local defect sampling.
+            difference -= np.median(difference, axis=(0, 1), keepdims=True)
+            importance = np.maximum(np.abs(difference).mean(-1) - .02, 0)
+            self._change_maps[scene_id] = torch.from_numpy(importance.copy())
+        return self._change_maps[scene_id]
+
     def __getitem__(self, index):
         paths, (w, h), scene_id = self.pairs[index // self.crops_per_scene]
         crop_index = index % self.crops_per_scene
@@ -62,6 +82,13 @@ class PairedPanoramaDataset(Dataset):
         if self.random_crops:
             y = int(torch.randint(h - ch + 1, (1,)))
             x = int(torch.randint(w, (1,)))
+            if float(torch.rand(())) < self.changed_crop_probability:
+                importance = self._change_map(paths, scene_id)
+                if importance.sum() > 0:
+                    selected = int(torch.multinomial(importance.flatten(), 1))
+                    row, column = divmod(selected, importance.shape[1])
+                    y = max(0, min(h-ch, round((row+.5) * h / importance.shape[0] - ch/2)))
+                    x = round((column+.5) * w / importance.shape[1] - cw/2) % w
         def read(path):
             with Image.open(path) as im:
                 first_width = min(cw, w - x)

@@ -12,6 +12,7 @@ from .data.tile_dataset import VariableTilePanoramaDataset, iter_tile_batches
 from .highres_correction import HighResolutionCorrectionPipeline, validate_mask
 from .models.panorama_model import PanoramaModel
 from .models.tile_spherical import PANORAMA_CONTRACT
+from .data.exposure import exposure_settings
 
 
 def run_tiled_inference(
@@ -77,7 +78,11 @@ def run_tiled_inference(
         checkpoint_path.resolve(), map_location=device, weights_only=False
     )
     if state.get('contract') != PANORAMA_CONTRACT and not inference_cfg.get('allow_legacy_checkpoint', False):
-        raise ValueError('Checkpoint predates camera-normalized feather blending. Retrain, or explicitly set inference.allow_legacy_checkpoint for comparison only.')
+        raise ValueError('Checkpoint predates exposure-matched feather blending. Retrain, or explicitly set inference.allow_legacy_checkpoint for comparison only.')
+    trained_exposure = exposure_settings(state.get('config', {}).get('input', {}).get('exposure_compensation'))
+    inference_exposure = exposure_settings(config['input'].get('exposure_compensation'))
+    if state.get('contract') == PANORAMA_CONTRACT and trained_exposure != inference_exposure:
+        raise ValueError('Exposure preprocessing must match the training checkpoint configuration')
     model = PanoramaModel(
         model_cfg["feature_dim"],
         (model_cfg["pano_feature_height"], model_cfg["pano_feature_width"]),
@@ -143,6 +148,7 @@ def run_tiled_inference(
         "checkpoint": str(checkpoint_path),
         "checkpoint_contract": state.get('contract'),
         "inference_contract": PANORAMA_CONTRACT,
+        "exposure": sample['exposure'],
         "weights": 'ema' if weights is not None else 'model',
         "device": str(device),
         "corrections": corrections,

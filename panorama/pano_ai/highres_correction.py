@@ -12,7 +12,8 @@ from PIL import Image
 
 from .models.advanced_corrections import GhostRemovalUNet, ParallaxCorrectionUNet
 from .models.color_enhance import ColorEnhancementUNet
-from .models.combined_restoration import CombinedRestorationUNet
+from .models.combined_restoration import (CombinedRestorationUNet, LegacyCombinedRestorationUNet,
+                                         COMBINED_CONTRACT, LEGACY_COMBINED_CONTRACT)
 from .models.glare_removal import GlareRemovalUNet
 from .models.lens_dots import remove_lens_dots
 from .models.nadir_zenith import NadirZenithInpainter
@@ -85,13 +86,13 @@ def _apply_tiled_model(
                         .unsqueeze(0)
                         .to(device)
                     )
-                predicted = _image(model(*arguments))[:crop_height, :crop_width].astype(
-                    np.float32
-                )
+                # Fuse floating-point predictions; quantize only once after blending.
+                predicted = (model(*arguments)[0].detach().cpu().permute(1, 2, 0).numpy()
+                             [:crop_height, :crop_width].clip(0, 1) * 255)
                 weight = window[:crop_height, :crop_width]
                 output[y : y + crop_height, x : x + crop_width] += predicted * weight
                 weights[y : y + crop_height, x : x + crop_width] += weight
-    return np.clip(output / np.maximum(weights, 1e-6), 0, 255).astype(np.uint8)
+    return np.rint(output / np.maximum(weights, 1e-6)).clip(0, 255).astype(np.uint8)
 
 
 def validate_mask(mask, shape):
@@ -103,6 +104,33 @@ def validate_mask(mask, shape):
     return mask
 
 
+def _apply_context_tiled(image, model, tile_size, overlap, device):
+    """Discard context halos and keep every tile on the same pooling lattice."""
+    height, width = image.shape[:2]
+    lattice = int(model.lattice_multiple)
+    halo = int(model.inference_halo)
+    halo = ((halo + lattice - 1) // lattice) * lattice
+    step = max(lattice, ((tile_size - overlap) // lattice) * lattice)
+    output = np.zeros(image.shape, np.float32)
+    weights = np.zeros((height, width, 1), np.float32)
+    window = np.maximum(cv2.createHanningWindow((tile_size, tile_size), cv2.CV_32F), 1e-3)[..., None]
+    with torch.inference_mode():
+        for y in range(0, height, step):
+            for x in range(0, width, step):
+                ch, cw = min(tile_size, height-y), min(tile_size, width-x)
+                ph = ((ch + 2 * halo + lattice - 1) // lattice) * lattice
+                pw = ((cw + 2 * halo + lattice - 1) // lattice) * lattice
+                rows = np.arange(y-halo, y-halo+ph).clip(0, height-1)
+                columns = np.arange(x-halo, x-halo+pw) % width
+                patch = np.ascontiguousarray(image[rows[:, None], columns[None, :]])
+                pred = model(_tensor(patch).to(device))[0, :, halo:halo+ch, halo:halo+cw]
+                pixels = pred.cpu().permute(1, 2, 0).numpy().clip(0, 1) * 255
+                weight = window[:ch, :cw]
+                output[y:y+ch, x:x+cw] += pixels * weight
+                weights[y:y+ch, x:x+cw] += weight
+    return np.rint(output / weights.clip(1e-6)).clip(0, 255).astype(np.uint8)
+
+
 def apply_tiled_model(image, model, tile_size, overlap, device, mask=None, mask_as_input=True):
     if tile_size < 8 or not 0 <= overlap < tile_size:
         raise ValueError('Require tile_size >= 8 and 0 <= overlap < tile_size')
@@ -110,11 +138,14 @@ def apply_tiled_model(image, model, tile_size, overlap, device, mask=None, mask_
         mask = validate_mask(mask, image.shape[:2])
         if not mask.any():
             return image.copy()
-    # Give both ends of the panorama real neighbouring longitude context.
-    pad = min(image.shape[1], max(1, overlap // 2))
-    padded = np.pad(image, ((0, 0), (pad, pad), (0, 0)), mode='wrap')
-    padded_mask = np.pad(mask, ((0, 0), (pad, pad)), mode='wrap') if mask is not None else None
-    result = _apply_tiled_model(padded, model, tile_size, overlap, device, padded_mask, mask_as_input)[:, pad:-pad]
+    if getattr(model, 'inference_halo', 0):
+        result = _apply_context_tiled(image, model, tile_size, overlap, device)
+    else:
+        # Give both ends of the panorama real neighbouring longitude context.
+        pad = min(image.shape[1], max(1, overlap // 2))
+        padded = np.pad(image, ((0, 0), (pad, pad), (0, 0)), mode='wrap')
+        padded_mask = np.pad(mask, ((0, 0), (pad, pad)), mode='wrap') if mask is not None else None
+        result = _apply_tiled_model(padded, model, tile_size, overlap, device, padded_mask, mask_as_input)[:, pad:-pad]
     if mask is not None:
         result = np.rint(image * (1 - mask[..., None]) + result * mask[..., None]).clip(0, 255).astype(np.uint8)
     return result
@@ -179,8 +210,11 @@ class HighResolutionCorrectionPipeline:
                 )
                 if state.get('task', name) != name:
                     raise ValueError(f'Checkpoint task does not match {name}')
-                if name == 'combined' and state.get('contract') != 'paired_panorama_restoration_v1':
-                    raise ValueError('Combined restoration requires its own paired-panorama checkpoint')
+                if name == 'combined':
+                    if state.get('contract') == LEGACY_COMBINED_CONTRACT:
+                        model_type = LegacyCombinedRestorationUNet
+                    elif state.get('contract') != COMBINED_CONTRACT:
+                        raise ValueError('Combined restoration requires its own paired-panorama checkpoint')
             channel_key = 'base_channels' if name in ('parallax', 'ghost_removal') else 'channels'
             model = model_type(**{channel_key: state.get('channels', 32) if state else 32}).to(self.device)
             if state is not None:
