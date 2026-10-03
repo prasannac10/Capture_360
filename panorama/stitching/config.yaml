@@ -7,8 +7,12 @@ model:
   pano_feature_width: 1500
   output_height: 6000
   output_width: 12000
-  train_output_height: 1500
-  train_output_width: 3000
+  # Render native-scale 1024px training crops on the 12K coordinate lattice.
+  train_output_height: 6000
+  train_output_width: 12000
+  detail:
+    mode: rgb_residual
+    residual_scale: 0.1
   encoder:
     backbone: resnet18
     pretrained: true
@@ -21,6 +25,10 @@ training:
   batch_size: 1
   tile_batch_size: 4
   decoder_output_tile: 1024
+  native_crop_size: 1024
+  native_crops_per_scene: 4
+  seam_crop_probability: 0.5
+  checkpoint_encoder: true
   lr: 5.0e-5
   weight_decay: 1.0e-4
   epochs: 10
@@ -29,8 +37,8 @@ training:
   training_data: data/train
   val_data: data/val
   model_path: ../pano_ai/checkpoints
-  best_model_name: panorama_tiled_best.pt
-  model_name: panorama_tiled_last.pt
+  best_model_name: panorama_native_detail_best.pt
+  model_name: panorama_native_detail_last.pt
   mixed_precision: true
   max_tiles_per_frame: null
 input:
@@ -49,13 +57,16 @@ input:
   supported_projections: [fisheye_180,pinhole]
   profiles:
     dslr_fisheye: {width: 9504, height: 6336, projection: fisheye_180, fov_degrees: 180.0, min_frames: 4, max_frames: 8}
-    drone_still: {width: 4096, height: 3072, projection: pinhole, min_frames: 20, max_frames: 30}
-    mobile: {width: 3000, height: 4000, projection: pinhole, min_frames: 20, max_frames: 30}
+    # Ranges accept smaller originals in either orientation. Exact profiles
+    # retain priority in auto mode; request mobile/drone_still explicitly when
+    # distinguishing devices with identical dimensions.
+    drone_still: {width: 4096, height: 3072, projection: pinhole, min_frames: 20, max_frames: 30, resolution_range: {min_short_edge: 1, max_short_edge: 2100, max_long_edge: 3500}}
+    mobile: {width: 3000, height: 4000, projection: pinhole, min_frames: 20, max_frames: 30, resolution_range: {min_short_edge: 1, max_short_edge: 2100, max_long_edge: 3500}}
     mobile_square: {width: 2048, height: 2048, projection: pinhole, min_frames: 4, max_frames: 60}
     mobile_landscape: {width: 1920, height: 1080, projection: pinhole, min_frames: 20, max_frames: 60}
   preserve_original_resolution: true
 loss:
-  supervised: {l1_weight: 1.0,ssim_weight: 0.2,perceptual_weight: 0.1}
+  supervised: {l1_weight: 1.0,ssim_weight: 0.2,perceptual_weight: 0.1,edge_weight: 0.2}
   # RGB-only training has no predicted geometry for this loss; nonzero is rejected.
   geometry: {smoothness_weight: 0.0}
 stitching:
@@ -72,9 +83,9 @@ correction:
   checkpoints: {combined: ../pano_ai/checkpoints/combined_best.pt,glare: ../pano_ai/checkpoints/glare_best.pt,nadir_zenith: ../pano_ai/checkpoints/nadir_zenith_best.pt,color: ../pano_ai/checkpoints/color_best.pt}
   toggles: {combined: false,glare: false,dots: false,nadir_zenith: false,color: false,sharpen: false}
 ai_pipeline:
-  # Stage 1: trained PanoramaModel stitches source frames into panorama RGB.
+  # Stage 1: trained PanoramaModel refines native RGB with a learned detail head.
   # Stage 2: enabled correction stages process that panorama.
-  # Requires a trained panorama checkpoint; source_preserving is an alternative.
+  # Requires retraining for the rgb_residual architecture; no classical routing.
   mode: tiled_neural
   learned_views:
     min_confidence: 0.8
@@ -85,7 +96,7 @@ ai_pipeline:
 inference:
   use_ema: true
   allow_legacy_checkpoint: false
-  checkpoint: ../pano_ai/checkpoints/panorama_tiled_best.pt
+  checkpoint: ../pano_ai/checkpoints/panorama_native_detail_best.pt
   output_dir: ../outputs/panoramas
   save_outputs: true
   save_intermediate: true

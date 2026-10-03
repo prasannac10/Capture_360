@@ -100,6 +100,7 @@ def prepare(root):
     pipeline_path = Path(__file__).resolve().parents[2] / 'stitching' / 'config.yaml'
     small_model = dict(feature_dim=8, tile_size=64, tile_overlap=16, pano_feature_height=16, pano_feature_width=32,
                        output_height=64, output_width=128, train_output_height=64, train_output_width=128,
+                       detail=dict(mode='features'),
                        encoder=dict(backbone='resnet18', pretrained=False, feature_stride=8), attention=dict(heads=2, layers=1))
     job = dict(dataset_root='dataset', output_dir='training', pipeline_config=str(pipeline_path), seed=42,
                cpu_threads=2, epochs=2, tasks=[task for task in TASKS if task != 'combined'],

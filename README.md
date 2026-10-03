@@ -13,9 +13,20 @@ Both paths pass through a shared, ordered `PanoramaCorrection` chain. The stages
 
 ## Learned stitcher
 
-`panorama/pano_ai/` expects approximately 14,000 real scene sets with `images/*.png`, `poses.pt`, and one final `panorama.png`. Run Python commands from the repository root with `python -m panorama.pano_ai.<module>`. Select `stitching.engine: ai` or `stitching.engine: classical` in `panorama/stitching/config.yaml`; callers use `panorama.stitching.stitch(...)` and are routed to the selected implementation.
+The Python default is `tiled_neural` with native RGB residual detail. It consumes
+calibrated fisheye or pinhole source frames and produces 12000x6000 RGB before
+optional correction. Training needs aligned, genuine 12K reference panoramas;
+no fixed scene count establishes quality. Run Python commands from the repository
+root with `python -m panorama.pano_ai.<module>`. Select the engine in
+`panorama/stitching/config.yaml`; callers use `panorama.stitching.stitch(...)`.
 
-The model is trained on fisheye imagery. Narrow-FOV rectilinear phone-lens adaptation is explicitly deferred and requires a new dataset with logged capture poses.
+Drone/mobile profiles accept originals up to 3500x2100 in either orientation,
+alongside their original supported sizes. Accurate per-frame calibration and
+poses are required. The new detail head requires retraining with
+`panorama_native_rgb_residual_v6` checkpoints; existing v4 weights cannot supply
+it. See the [detailed architecture](panorama/ARCHITECTURE_VARIABLE_TILED.md),
+[training guide](panorama/pano_ai/README.md), and
+[testing guide](panorama/stitching/TESTING.md#neural-native-detail-validation).
 
 ## Build
 
@@ -35,20 +46,26 @@ The Docker build uses the root `Dockerfile`.
 
 ## AI model deployment
 
-ONNX Runtime is the selected Android runtime. After training:
+The native tiled Python model is the reference implementation. Its tile stream,
+spherical projection and native RGB sampler are not currently exported as an
+Android ONNX graph. The export command writes runtime-contract notes only:
 
 ```bash
-python -m panorama.pano_ai.export --config panorama/stitching/config.yaml --checkpoint panorama/pano_ai/checkpoints/simple_360.pt --output panorama/pano_ai/artifacts/pano_model.onnx
+python -m panorama.pano_ai.export --output panorama/pano_ai/artifacts/tiled_runtime_contract.json
 ```
 
-Copy the generated `pano_model.onnx` to `app/src/main/assets/`. `model_metadata.json` documents the fixed preprocessing and tensor contract. The repository intentionally does not contain a fake/untrained model artifact.
+This JSON is not a trained model artifact. Android integration needs a compatible
+deployment implementation; the repository does not supply a fake/untrained ONNX model.
 
 ## Smoke test
 
-Run from the repository root after real data is available:
+Run synthetic AI regression checks from the repository root:
 
 ```bash
-python -m pytest panorama/pano_ai/tests/test_smoke.py
+python -B -m unittest panorama.pano_ai.tests.test_native_detail
+python -B -m unittest discover -s panorama/pano_ai/tests
 ```
 
-It performs a real forward/backward pass on 2–3 scene sets and asserts `[B,3,256,512]` output and finite gradients.
+These verify model/data contracts, actual gradient updates, checkpoint reload,
+and detail rendering on the 12K coordinate lattice. They do not establish real
+capture quality or full-12K GPU memory/latency.

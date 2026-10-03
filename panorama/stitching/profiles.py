@@ -18,6 +18,10 @@ def select_profile(
         profile = profiles[requested]
         _validate_dimensions(width, height, requested, profile)
         return requested, profile
+    # Prefer established exact profiles before overlapping resolution ranges.
+    for name, profile in profiles.items():
+        if _matches(width, height, name, {k: v for k, v in profile.items() if k != 'resolution_range'}):
+            return name, profile
     for name, profile in profiles.items():
         if _matches(width, height, name, profile):
             return name, profile
@@ -30,6 +34,12 @@ def select_profile(
 
 
 def _matches(width: int, height: int, name: str, profile: dict[str, Any]) -> bool:
+    limits = profile.get('resolution_range')
+    if limits and width > 0 and height > 0:
+        short, long = sorted((width, height))
+        if (limits['min_short_edge'] <= short <= limits['max_short_edge']
+                and long <= limits['max_long_edge']):
+            return True
     if name == "dslr_fisheye":
         # DSLR bodies may store the same sensor orientation as portrait or
         # landscape depending on EXIF/orientation handling.  Fisheye capture
@@ -62,6 +72,12 @@ def _validate_dimensions(
     width: int, height: int, name: str, profile: dict[str, Any]
 ) -> None:
     if not _matches(width, height, name, profile):
+        if profile.get('resolution_range'):
+            limits = profile['resolution_range']
+            raise ValueError(
+                f"{name} accepts short edge {limits['min_short_edge']}..{limits['max_short_edge']} "
+                f"and long edge <= {limits['max_long_edge']}, or its original profile size; got {width}x{height}"
+            )
         qualifier = "at least" if name == "mobile" else "approximately (either orientation for dslr_fisheye)"
         raise ValueError(
             f"{name} expects {qualifier} {profile['width']}x{profile['height']}; got {width}x{height}"

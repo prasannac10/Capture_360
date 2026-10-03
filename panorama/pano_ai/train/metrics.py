@@ -21,11 +21,16 @@ def ssim(pred, target):
 
 
 @torch.no_grad()
-def image_quality(pred, target):
+def image_quality(pred, target, mask=None):
     """Mean per-image metrics; pixel accuracy requires ALL RGB channels within 8/255."""
     pred, target = pred.detach().float(), target.detach().float()
     rows = []
-    for prediction, reference in zip(pred, target):
+    for index, (prediction, reference) in enumerate(zip(pred, target)):
+        if mask is not None:
+            valid = mask[index, 0] > 0
+            if not bool(valid.any()):
+                continue
+            prediction, reference = prediction[:, valid], reference[:, valid]
         rows.append(dict(psnr=psnr(prediction, reference), ssim=ssim(prediction, reference),
                          pixel_accuracy_pct=float(((prediction-reference).abs().amax(0) <= 8/255).float().mean() * 100),
                          l1=float((prediction-reference).abs().mean())))

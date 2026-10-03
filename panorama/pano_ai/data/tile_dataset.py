@@ -101,7 +101,9 @@ class VariableTilePanoramaDataset(Dataset):
         if self.has_gt:
             gp = scene / "panorama.png"
             if not gp.exists():
-                raise FileNotFoundError(gp)
+                gp = scene / 'Stitched.jpg'
+            if not gp.exists():
+                raise FileNotFoundError(f'{scene}: require panorama.png or unedited Stitched.jpg; Edited.jpg is not selected')
             with Image.open(gp) as im:
                 out["gt_panorama"] = (
                     torch.from_numpy(np.array(im.convert("RGB"), copy=True))

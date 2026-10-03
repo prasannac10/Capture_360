@@ -21,11 +21,15 @@ class PanoramaModel(nn.Module):
         attention_heads=8,
         attention_layers=2,
         output_tile=1024,
+        detail_mode='features',
+        residual_scale=0.1,
+        checkpoint_encoder=False,
     ):
         super().__init__()
         self.feature_dim = feature_dim
         self.pano_feature_size = pano_feature_size
         self.encoder = ImageEncoder(feature_dim, backbone, pretrained)
+        self.encoder.checkpoint_gradients = checkpoint_encoder
         self.metadata = TileMetadataEncoder(feature_dim)
         self.aggregator = TileAttentionAggregator(
             feature_dim, attention_heads, attention_layers
@@ -35,7 +39,8 @@ class PanoramaModel(nn.Module):
             nn.Linear(feature_dim, feature_dim), nn.Sigmoid()
         )
         self.decoder = MultiScalePanoramaDecoder(
-            feature_dim, 3, output_size, output_tile=output_tile
+            feature_dim, 3, output_size, output_tile=output_tile,
+            detail_mode=detail_mode, residual_scale=residual_scale,
         )
 
     def _meta(self, xy, wh, size, cam, rot):
@@ -51,7 +56,8 @@ class PanoramaModel(nn.Module):
         return self.metadata(xy, wh, image, c, r)[0]
 
     def forward_scene(
-        self, batch_factory, image_size, camera_params, poses, tile_batch_size=4
+        self, batch_factory, image_size, camera_params, poses, tile_batch_size=4,
+        source_sampler=None, output_region=None,
     ):
         """Yield (frame_index, tiles[K,3,H,W], xy[K,2], wh[K,2]) twice.
 
@@ -143,4 +149,4 @@ class PanoramaModel(nn.Module):
         sph, weight = blend_frame(sph, weight, frame_sum, frame_weight, camera_weight)
         spherical = sph / weight.clamp_min(1e-12)
         spherical = spherical * self.condition(scene).view(1, self.feature_dim, 1, 1)
-        return self.decoder(spherical)
+        return self.decoder(spherical, source_sampler, output_region)

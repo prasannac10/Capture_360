@@ -10,14 +10,22 @@ python -m panorama.stitching.interface classical `
   --output "C:\outputs\classical_panorama"
 ```
 
-Inputs must be image paths of a single capture session, with all frames sharing
-the same dimensions. The profile is selected automatically:
+Inputs must belong to one capture session and match the selected profile.
+For calibrated captures, each image must match its own recorded dimensions and
+intrinsics. Exact profiles take priority over overlapping resolution ranges in
+auto mode; dimensions alone cannot distinguish a drone from a mobile camera.
 
 | Capture type | Frames | Dimensions | Projection |
 | --- | ---: | --- | --- |
 | DSLR fisheye | 4–8 | approximately 9504x6336 | Fisheye |
 | Drone still | 20–30 | approximately 4096x3072 | Perspective |
 | Mobile | 20–30 | portrait, at least 3000x4000 | Perspective |
+
+Both `drone_still` and `mobile` additionally accept positive dimensions with a
+long edge <=3500 and short edge <=2100, in either orientation. Their original
+profile sizes remain accepted. The range is a compatibility check, not a minimum
+quality recommendation. Other exact mobile profiles retain their configured
+frame counts; inspect `input.profiles` for the full list.
 
 Pass `--profile dslr_fisheye`, `--profile drone_still`, or `--profile mobile`
 to require a particular profile instead of auto-detection.
@@ -31,10 +39,18 @@ stage (`01_glare.png`, etc.), `final_panorama.png`, and `metadata.json`.
 python -m panorama.stitching.interface ai `
   --session "C:\data\test\scene_000001" `
   --output "C:\outputs" `
-  --checkpoint "C:\AI_Projects\Capture_360\panorama\pano_ai\checkpoints\panorama_tiled_best.pt"
+  --profile drone_still `
+  --checkpoint "C:\AI_Projects\Capture_360\panorama\pano_ai\checkpoints\panorama_native_detail_best.pt"
 ```
 
-The session must have this structure:
+The default `tiled_neural` / `rgb_residual` architecture requires a newly trained
+`panorama_native_rgb_residual_v6` checkpoint. It samples original RGB at native
+12K output coordinates and learns bounded residual corrections; no classical
+stitcher is used. Existing feature-only v4 checkpoints do not contain this head.
+
+A canonical session can contain `capture.json` plus its referenced source images
+(see [camera contract](../pano_ai/README.md#shared-camera-input)). The legacy
+pose/camera adapter accepts:
 
 ```text
 scene_000001/
@@ -50,7 +66,7 @@ scene_000001/
 {"projection": "fisheye_180", "fov_deg": 180.0}
 
 // Drone/mobile pinhole
-{"projection": "pinhole", "image_width": 4096, "image_height": 3072,
+{"projection": "pinhole", "image_width": 3500, "image_height": 2100,
  "horizontal_fov_deg": 84.0}
 ```
 
@@ -58,6 +74,23 @@ The command creates `outputs/scene_000001/` containing the initial panorama,
 every enabled correction stage, the final panorama, and `metadata.json`. It requires a tiled model
 checkpoint. If `--checkpoint` is omitted, it uses `inference.checkpoint` from
 `panorama/stitching/config.yaml`.
+
+Default output size is 12000x6000, controlled by `model.output_width/height`.
+The `stitching.output_*` settings control classical dispatch instead.
+In neural mode the scene folder contains
+`initial_panorama.png`, `initial_panorama.tiff`, `final_panorama.png`,
+`final_corrected_panorama.png`, `final_corrected_panorama.tiff`, `metadata.json`,
+and any enabled correction intermediates/defect masks. TIFFs are lossless 8-bit
+RGB, not HDR. Metadata records `detail_mode`, checkpoint/inference contracts,
+selected model/EMA weights, source/output sizes and exposure diagnostics.
+Correction toggles are disabled until separately trained weights are validated.
+
+For a v4 comparison, use a separate config with `model.detail.mode: features`
+and the matching checkpoint. Native `residual_scale` and exposure settings must
+match the v5 training config. `allow_legacy_checkpoint` cannot override a detail
+architecture or native residual-scale mismatch. The alternative
+`ai_pipeline.mode: source_preserving` uses the geometric compositor and optional
+separate view heads; it does not accept `--checkpoint` for a panorama decoder.
 
 ## Python API
 
@@ -77,9 +110,130 @@ stitch(
     "C:/data/test/scene_000001",
     "C:/outputs",
     engine="ai",
-    checkpoint="C:/checkpoints/panorama_tiled_best.pt",
+    profile="drone_still",
+    checkpoint="C:/checkpoints/panorama_native_detail_best.pt",
 )
 ```
+
+## Neural native-detail validation
+
+Run from the repository root with torch/torchvision and the training requirements
+installed. These tests create small synthetic temporary datasets and do not
+require real captures or pretrained downloads:
+
+```powershell
+python -B -m unittest panorama.pano_ai.tests.test_native_detail
+python -B -m unittest discover -s panorama/pano_ai/tests
+```
+
+The native-detail tests cover source-texture identity before learning, winner
+ownership of conflicting views, overlap disagreement, periodic region projection,
+learned tile/crop continuity, encoder/head gradients with activation checkpointing,
+target-size rejection, actual training/EMA checkpoint reload, neural inference,
+and architecture-mismatch rejection. A crop test samples the actual 12K
+coordinate lattice; the suite is not full-size GPU validation or a quality study.
+The broader `train.smoke_training` workflow deliberately selects the legacy
+feature-only decoder for its small synthetic references.
+
+For real training, each source scene needs valid calibration and an aligned,
+genuine 12000x6000 `panorama.png`. Split by physical scene. The native trainer
+rejects smaller targets and renders 1024-pixel crops at the full output scale;
+it does not resize the target to 3K. Four crops per scene per epoch are the
+default, with a 50% preference for source overlap disagreement. Validation uses
+up to five fixed corner/centre crops, so logged metrics are crop averages.
+Detailed settings and data layouts are in the [training guide](../pano_ai/README.md#native-detail-configuration-and-checkpoint-migration).
+
+Train with the prepared two-stage bundle or use the standalone panorama trainer:
+
+```powershell
+python -m panorama.pano_ai.train.run_training --config panorama/pano_ai/train/configs/stitching_correction_job.yaml
+# Alternative: panorama only; configure its training_data/val_data first.
+python -m panorama.pano_ai.train_tiled --config ../stitching/config.yaml
+```
+
+The standalone trainer and `tiled_inference` CLI resolve `--config` relative to
+`panorama/pano_ai/`, while
+the stitching interface resolves it from the working directory. Configured
+checkpoint paths resolve relative to the shared YAML; explicit `--checkpoint`
+paths resolve from the working directory. Training writes
+`panorama_native_detail_best.pt` and `panorama_native_detail_last.pt`; panorama
+and combined correction have separate checkpoints/supervision.
+
+After retraining, run a held-out scene at 12K on the intended GPU. Confirm output
+dimensions, metadata detail mode/contract, memory and latency. Compare the v5
+result with an aligned reviewed reference and an explicit v4 baseline at identical
+dimensions/heading. Inspect straight edges, fine texture, overlapping objects,
+exposure transitions, poles and the actual longitude join. Record metrics/crops:
+
+```powershell
+python -m panorama.stitching.visual_regression --candidate outputs/native/scene_001/final_panorama.png --reference data/references/scene_001/panorama.png --out outputs/native_visual_check
+```
+
+Paths above are placeholders for a prepared held-out scene. Metrics are RGB MAE,
+edge error, high-pass texture error and longitude-join error; outputs include
+native centre/bottom/join side-by-side crops. Use `--limits limits.json` with
+thresholds derived from held-out captures to fail regressions. Supply `--original`
+and `--mask` only for a masked correction preservation check, not for the global
+neural stitcher. Differences from an unreviewed baseline are not proof of quality.
+Rotation-only geometry still leaves translation parallax unresolved; hard
+ownership can reveal seams, and the residual head is not an optical-flow model.
+
+## T4 versus H100 training benchmark
+
+Run the same code revision, config and representative training scene on each
+instance. The scene must include calibrated sources and `panorama.png`. Do not
+change tile batch/crop sizes for the first comparison; that changes the workload.
+From the repository root on T4:
+
+```bash
+python -m panorama.pano_ai.train.benchmark --scene /data/panorama/train/scene_001 --config panorama/stitching/config.yaml --out outputs/benchmark_t4 --warmup 2 --steps 5
+```
+
+Repeat on H100 with identical arguments except `--out outputs/benchmark_h100`.
+Paths are examples; use the same copied scene on both hosts. Optional
+`--checkpoint /path/to/panorama_native_detail_best.pt` initializes both from the
+same matching model weights. Otherwise both runs use the configured encoder
+initialization and seed. Use empty/new output directories. This performs real
+optimizer updates on an in-memory model without overwriting training checkpoints.
+CUDA is required; `--allow-cpu` exists only for synthetic execution tests.
+
+`report.json` includes synchronized wall time per optimizer step, peak PyTorch
+allocated/reserved VRAM, scene/code/initial-weight fingerprints, effective config,
+software versions, metrics and one-second `nvidia-smi` utilization by physical
+GPU UUID. Scene/reference/calibration/exposure loading is timed separately as
+setup. Each step is one training crop, not an entire scene or epoch.
+The timings include the production crop sampler, two encoder passes, loss,
+backward, optimizer, optional EMA and training metrics.
+
+A separate instrumented step writes `trace.json` and named CPU/device stage
+timings for source-tile loading, native-photo loading, native RGB sampling and
+projection, feature projection, encoder, decoder, forward, loss, backward and
+optimizer. Load the Chrome trace in a compatible trace viewer to inspect CPU
+gaps, GPU kernels and nested work. Inclusive stage times overlap and cannot be
+summed; encoder ranges also appear during checkpoint recomputation in backward.
+The profiler step is excluded from reported throughput and measured peak VRAM.
+GPU utilization is a sampled observation, not exact kernel occupancy; if telemetry
+is unavailable, the report records an error instead of fabricated utilization.
+
+Bring the two report files onto one machine and compare:
+
+```bash
+python -m panorama.pano_ai.train.compare_benchmarks --first outputs/benchmark_t4/report.json --second outputs/benchmark_h100/report.json --out outputs/t4_h100_comparison.json
+```
+
+The comparison rejects scene/code/initial-weight or relevant config mismatches
+and reports the measured step speedup and both stage breakdowns. Match software
+and data storage as well as GPU settings; a different CPU/storage configuration
+can change loading time. This benchmark excludes epoch validation/checkpoint
+saving, so its speedup must not be presented as a guaranteed full-run speedup.
+No T4/H100 timings are established until these commands run on accessible GPUs.
+
+Check the benchmark implementation with:
+
+```powershell
+python -B -m unittest panorama.pano_ai.tests.test_benchmark
+```
+
 # ARCore mobile captures
 
 For original camera JPEGs accompanied by `ar_poses.jsonl`, use the recorded
@@ -246,3 +400,47 @@ repaired mask fraction. Intermediate `00_object_removal_mask.png` and
 ```powershell
 python -B -m unittest panorama.pano_classical.test_object_removal
 ```
+
+### Coverage-aware native detail training
+
+Native RGB training supervises observed pixels only. L1 is normalized by covered
+pixels; edge loss requires both adjacent pixels, and SSIM requires a fully covered
+window. Perceptual inputs use identical zero context outside coverage. Validation
+metrics exclude uncovered pixels and entirely uncovered validation crops are skipped.
+Use an unedited `panorama.png` or `Stitched.jpg` at the configured output size;
+`Edited.jpg` is never selected automatically. Labels or retouching within observed
+regions still require a clean reference. Calibration and decoded RGB photos remain
+required; a raw DNG/PTGui folder is not directly accepted.
+
+Native inference writes `coverage_mask.png` (white = observed), and automatically
+provides missing coverage to the configured `nadir_zenith` correction model. With
+that correction disabled, unsupported areas remain black. Filling these areas
+requires an appropriate trained correction checkpoint or additional capture coverage;
+the stitching decoder does not invent missing sky. Native exposure gains now use
+the same linear-light transfer function as encoder preprocessing. Retrain the native
+model after this preprocessing change; previous non-unity gain runs are not comparable.
+
+### Full-resolution RAW preparation
+
+Install `rawpy` in the preparation environment, then run:
+
+```powershell
+python -m panorama.pano_ai.data.prepare_native --scene "C:/data/raw/scene_0001" --output "C:/data/prepared/scene_0001"
+```
+
+This new command decodes DNGs with `half_size=False`, no automatic orientation
+rotation, camera white balance and no automatic brightness. It saves full-size
+full-resolution 8-bit sRGB JPEGs (quality 100, 4:4:4; JPEG compression remains lossy), copies the original 12000?6000 `Stitched.jpg` without
+resizing, retains `Panorama.pts`, and never deletes source DNGs. Output must be a
+new directory. `Edited.jpg` is not used. A failed preparation may leave partial
+output; use a new directory on retry.
+
+Supply `--capture /path/to/capture.json` only when its calibration already matches
+the full-size, unrotated decoded RGB pixels. Half-size calibration is rejected.
+Without calibration, `preparation.json` explicitly marks the result as requiring
+calibration before training. This command does not convert PTGui lens distortion
+or poses; verified calibration/undistortion remains required. RAW decoding has
+not been validated on the supplied real scene locally because rawpy is absent.
+The default drone profile permits at most 30 frames; the supplied 33-frame scene
+needs an explicitly adjusted frame limit after calibration. Train with the default
+`rgb_residual` mode and a new v6 checkpoint.

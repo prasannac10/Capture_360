@@ -11,7 +11,8 @@ from .data.tile_dataset import (
     iter_tile_batches,
 )
 from .models.panorama_model import PanoramaModel
-from .models.tile_spherical import PANORAMA_CONTRACT
+from .models.tile_spherical import panorama_contract
+from .data.native_rgb import NativeRGBSource
 from .utils.ema import EMA
 from .train.panorama_loss import PanoramaLoss
 from .train.metrics import image_quality
@@ -26,6 +27,38 @@ def run_scene(
     # tile_size/overlap are supplied by caller through model attributes in the closure below.
     if train:
         optimizer.zero_grad(set_to_none=True)
+    native = getattr(model.decoder, 'detail_mode', 'features') == 'rgb_residual'
+    source_sampler = NativeRGBSource(sample) if native else None
+    output_region = None
+    if native:
+        oh, ow = model.decoder.output_size
+        if tuple(sample['gt_panorama'].shape[-2:]) != (oh, ow):
+            raise ValueError('Native RGB detail training requires ground truth at the configured output resolution; do not upscale low-resolution targets')
+        crop = int(sample.get('_native_crop_size', 1024))
+        if crop <= 0:
+            raise ValueError('native_crop_size must be positive')
+        ch, cw = min(crop, oh), min(crop, ow)
+        if train:
+            top = int(torch.randint(oh - ch + 1, (1,)))
+            left = int(torch.randint(ow - cw + 1, (1,)))
+            # Oversample overlaps with actual view disagreement. Validation
+            # uses fixed crops and does not depend on the training sampler.
+            ph, pw = min(128, oh), min(256, ow)
+            _, coverage, disagreement = source_sampler((0, 0, ph, pw), (ph, pw), device)
+            supported = coverage[0, 0] > 0
+            candidates = torch.nonzero(supported)
+            if float(torch.rand(())) < sample.get('_seam_crop_probability', .5):
+                seams = torch.nonzero((disagreement[0, 0] > .02) & supported)
+                if len(seams):
+                    candidates = seams
+            if not len(candidates):
+                raise ValueError('Native crop training requires observed source coverage')
+            row, column = candidates[int(torch.randint(len(candidates), (1,)))].tolist()
+            top = max(0, min(oh - ch, round((row + .5) * oh / ph) - ch // 2))
+            left = max(0, min(ow - cw, round((column + .5) * ow / pw) - cw // 2))
+        else:
+            top, left = sample.get('_validation_crop_origin', ((oh - ch) // 2, (ow - cw) // 2))
+        output_region = (top, left, ch, cw)
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx, torch.autocast(device_type=device.type, enabled=bool(scaler and scaler.is_enabled())):
         pred = model.forward_scene(
@@ -36,15 +69,30 @@ def run_scene(
             sample["camera_params"],
             sample["poses"],
             tile_batch_size,
+            source_sampler=source_sampler,
+            output_region=output_region,
         )
-        gt = sample["gt_panorama"].unsqueeze(0).to(device)
-        gt = F.interpolate(
-            gt, (pred.shape[-2], pred.shape[-1]), mode="bilinear", align_corners=False
-        )
-        loss = criterion(pred, gt) if criterion is not None else F.l1_loss(pred, gt)
+        gt = sample['gt_panorama']
+        if output_region is not None:
+            top, left, ch, cw = output_region
+            gt = gt[:, top:top + ch, left:left + cw]
+        gt = gt.unsqueeze(0).to(device)
+        if gt.shape[-2:] != pred.shape[-2:]:
+            gt = F.interpolate(gt, pred.shape[-2:], mode='bilinear', align_corners=False, antialias=True)
+        coverage = None
+        if native:
+            _, coverage, _ = source_sampler(output_region, model.decoder.output_size, device)
+            if not bool(coverage.any()):
+                raise ValueError('Training/evaluation crop has no observed source pixels')
+        if criterion is not None:
+            loss = criterion(pred, gt, mask=coverage) if native else criterion(pred, gt)
+        elif coverage is not None:
+            loss = ((pred - gt).abs() * coverage).sum() / (coverage.sum() * pred.shape[1]).clamp_min(1)
+        else:
+            loss = F.l1_loss(pred, gt)
         if not torch.isfinite(loss):
             raise ValueError('Non-finite panorama training loss')
-        quality = image_quality(pred, gt) if return_metrics else None
+        quality = image_quality(pred, gt, mask=coverage) if return_metrics else None
         if train:
             if scaler and scaler.is_enabled():
                 old_scale = scaler.get_scale()
@@ -115,6 +163,9 @@ def main(argv=None):
         m["attention"]["heads"],
         m["attention"].get("layers", 2),
         tr.get("decoder_output_tile", 1024),
+        detail_mode=m.get('detail', {}).get('mode', 'features'),
+        residual_scale=m.get('detail', {}).get('residual_scale', .1),
+        checkpoint_encoder=tr.get('checkpoint_encoder', False),
     ).to(dev)
     initial_parameter = next(model.parameters()).detach().clone()
     opt = torch.optim.AdamW(
@@ -128,11 +179,16 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     best = float("inf")
     epochs = a.epochs or tr["epochs"]
+    native = m.get('detail', {}).get('mode', 'features') == 'rgb_residual'
+    crops_per_scene = int(tr.get('native_crops_per_scene', 4)) if native else 1
+    if crops_per_scene <= 0:
+        raise ValueError('native_crops_per_scene must be positive')
     logger = TrainingLogger(out, 'panorama', model, opt, cfg, device=str(dev), epochs=epochs,
                             train_scenes=len(train), validation_scenes=len(val) if val else 0,
                             mixed_precision=scaler.is_enabled(),
                             validation_weights='ema' if ema else 'model',
-                            loss_definition='weighted panorama objective; l1 is logged separately')
+                            loss_definition='weighted panorama objective; l1 is logged separately',
+                            evaluation_scope='five fixed native-scale crops per scene' if native else 'full panorama')
 
     def prep(s):
         s = dict(s)
@@ -156,6 +212,10 @@ def main(argv=None):
             )
         s["_tile_size"] = m["tile_size"]
         s["_overlap"] = m["tile_overlap"]
+        s['_native_crop_size'] = tr.get('native_crop_size', 1024)
+        s['_seam_crop_probability'] = tr.get('seam_crop_probability', .5)
+        if not 0 <= s['_seam_crop_probability'] <= 1:
+            raise ValueError('seam_crop_probability must be in [0, 1]')
         return s
 
     for ep in range(1, epochs + 1):
@@ -163,6 +223,7 @@ def main(argv=None):
         train_rows = [
             run_scene(model, prep(train[i]), dev, tile_bs, True, opt, scaler, criterion, ema, return_metrics=True)
             for i in torch.randperm(len(train)).tolist()
+            for _ in range(crops_per_scene)
         ]
         training_metrics = {key: sum(row[key] for row in train_rows) / len(train_rows) for key in train_rows[0]}
         tl = training_metrics['loss']
@@ -171,15 +232,33 @@ def main(argv=None):
         model.eval()
         validation_metrics = None
         if val:
-            val_rows = [run_scene(model, prep(val[i]), dev, tile_bs, False, criterion=criterion,
-                                  return_metrics=True) for i in range(len(val))]
+            val_rows = []
+            for i in range(len(val)):
+                sample = prep(val[i])
+                if native:
+                    oh, ow = model.decoder.output_size
+                    ch, cw = min(sample['_native_crop_size'], oh), min(sample['_native_crop_size'], ow)
+                    origins = list(dict.fromkeys([(0, 0), (0, ow - cw), (oh - ch, 0),
+                                                   (oh - ch, ow - cw), ((oh - ch) // 2, (ow - cw) // 2)]))
+                else:
+                    origins = [None]
+                for origin in origins:
+                    if origin is not None:
+                        sample['_validation_crop_origin'] = origin
+                        _, coverage, _ = NativeRGBSource(sample)((*origin, ch, cw), (oh, ow), dev)
+                        if not bool(coverage.any()):
+                            continue
+                    val_rows.append(run_scene(model, sample, dev, tile_bs, False, criterion=criterion,
+                                              return_metrics=True))
+            if not val_rows:
+                raise ValueError('Validation scenes have no observed source coverage')
             validation_metrics = {key: sum(row[key] for row in val_rows) / len(val_rows) for key in val_rows[0]}
         vl = validation_metrics['loss'] if validation_metrics else tl
         if ema:
             ema.restore(model)
         state = {
             "parameter_change_l1": float((next(model.parameters()).detach() - initial_parameter).abs().sum()),
-            "contract": PANORAMA_CONTRACT,
+            "contract": panorama_contract(m.get('detail', {}).get('mode', 'features')),
             "task": "panorama",
             "model": model.state_dict(),
             "optimizer": opt.state_dict(),
