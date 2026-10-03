@@ -49,7 +49,7 @@ def stitch_pose_files(image_paths, output_path, output_size, poses_path, options
     options = options or {}
     allowed = {'refine_poses', 'exposure_compensation', 'seam_blending', 'recover_capture_headings', 'local_alignment'}
     numeric = {'seam_width': (256, 4096), 'blend_bands': (1, 8)}
-    if set(options) - allowed - set(numeric) - {'source_regions'}:
+    if set(options) - allowed - set(numeric) - {'source_regions', 'reference_frame'}:
         raise ValueError('Unknown pose option')
     if 'source_regions' in options and not isinstance(options['source_regions'], list):
         raise ValueError('source_regions must be a list')
@@ -60,6 +60,10 @@ def stitch_pose_files(image_paths, output_path, output_size, poses_path, options
                                or (key == 'seam_width' and value % 2)):
             raise ValueError(f'{key} must be an integer in {numeric[key]} (seam_width must be even)')
     camera_records = [records[path.stem] for path in paths]
+    reference_frame = options.get('reference_frame', paths[0].stem)
+    if not isinstance(reference_frame, str) or reference_frame not in [path.stem for path in paths]:
+        raise ValueError('reference_frame must be the filename stem of an input image')
+    reference_index = [path.stem for path in paths].index(reference_frame)
     rotations = np.array([np.asarray(record['m']).reshape(4, 4, order='F')[:3, :3]
                           for record in camera_records])
     heading_report = {'status': 'disabled'}
@@ -79,7 +83,8 @@ def stitch_pose_files(image_paths, output_path, output_size, poses_path, options
         local_alignment=options.get('local_alignment', False),
         seam_width=options.get('seam_width', 1024),
         blend_bands=options.get('blend_bands', 5),
-        source_regions=options.get('source_regions', []), view_refiner=view_refiner)
+        source_regions=options.get('source_regions', []), view_refiner=view_refiner,
+        reference_index=reference_index)
     covered_fraction = float(np.mean(coverage > 0))
     if (work_w, work_h) != (width, height):
         panorama = cv2.resize(panorama, (width, height), interpolation=cv2.INTER_LANCZOS4)

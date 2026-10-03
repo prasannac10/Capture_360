@@ -76,7 +76,7 @@ def extract_tiles(image: torch.Tensor, tile_size: int = 1024, overlap: int = 128
 
 
 def raised_cosine_window(tile_size: int, device, dtype):
-    # Hann-like 2-D weighting reduces visible seams when tiled features are fused.
+    # Discrete utility; spherical fusion evaluates its cosine weights at projected coordinates.
     w = torch.hann_window(
         tile_size, periodic=False, device=device, dtype=dtype
     ).clamp_min(1e-3)

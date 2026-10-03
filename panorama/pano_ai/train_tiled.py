@@ -11,6 +11,7 @@ from .data.tile_dataset import (
     iter_tile_batches,
 )
 from .models.panorama_model import PanoramaModel
+from .models.tile_spherical import PANORAMA_CONTRACT
 from .utils.ema import EMA
 from .train.panorama_loss import PanoramaLoss
 from panorama.stitching.profiles import validate_frame_set
@@ -169,7 +170,7 @@ def main(argv=None):
             ema.restore(model)
         state = {
             "parameter_change_l1": float((next(model.parameters()).detach() - initial_parameter).abs().sum()),
-            "contract": "panorama_pixel_centres_v2",
+            "contract": PANORAMA_CONTRACT,
             "task": "panorama",
             "model": model.state_dict(),
             "optimizer": opt.state_dict(),

@@ -4,7 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-KINDS = ('missing_coverage', 'moving_objects', 'photographer', 'glare', 'lens_dots', 'other')
+KINDS = ('missing_coverage', 'moving_objects', 'photographer', 'shadow', 'glare', 'lens_dots', 'other')
 
 
 def load_defect_masks(scene, shape, coverage=None):
@@ -21,7 +21,7 @@ def load_defect_masks(scene, shape, coverage=None):
             raise ValueError('Unknown defect category')
     else:
         for name, filename in (('other', 'correction_mask.png'), ('moving_objects', 'ghost_mask.png'),
-                                ('photographer', 'photographer_mask.png')):
+                                ('photographer', 'photographer_mask.png'), ('shadow', 'shadow_mask.png')):
             if (scene / filename).exists():
                 paths[name] = filename
     masks = {}

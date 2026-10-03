@@ -70,7 +70,35 @@ def estimate_displacement(source, reference, valid, reference_valid, trusted):
     return (field if accepted else np.zeros_like(field)), report
 
 
-def align_views(images, masks, qualities, width=1024):
+def protect_view_centres(fields, masks, qualities, reference_index=0):
+    """Keep the anchor fixed and taper deformation away from each view's core."""
+    if not 0 <= reference_index < len(fields):
+        raise ValueError('reference_index is outside the input views')
+    result = []
+    for i, field in enumerate(fields):
+        h, w = field.shape[:2]
+        scores = np.stack([np.where(cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST) > 0,
+                                   cv2.resize(q, (w, h), interpolation=cv2.INTER_LINEAR), -1)
+                           for m, q in zip(masks, qualities)])
+        protected = (np.argmax(scores, axis=0) == i) & (scores[i] >= 0)
+        # Also protect the central, high-quality portion even if another view wins ownership.
+        peak = float(scores[i].max())
+        if peak > 0:
+            protected |= scores[i] >= .8 * peak
+        if i == reference_index:
+            result.append(np.zeros_like(field))
+            continue
+        # Periodic distance to the protected core gives a smooth side/corner transition.
+        pad = min(32, w)
+        free = (~protected).astype(np.uint8)
+        extended = cv2.copyMakeBorder(free, 0, 0, pad, pad, cv2.BORDER_WRAP)
+        distance = cv2.distanceTransform(extended, cv2.DIST_L2, 3)[:, pad:-pad]
+        taper = np.clip(distance / 16, 0, 1)
+        result.append(field * taper[..., None])
+    return result
+
+
+def align_views(images, masks, qualities, width=1024, reference_index=0):
     """Register to a fixed central-view mosaic, never to an averaged blend."""
     h, w = images[0].shape[:2]
     size = (min(width, w), min(width, w) // 2)
@@ -91,8 +119,14 @@ def align_views(images, masks, qualities, width=1024):
     boundary = cv2.dilate(boundary, np.ones((11, 11), np.uint8))
     fields, reports = [], []
     for i, (im, mask) in enumerate(zip(small, valid)):
+        if i == reference_index:
+            fields.append(np.zeros((*size[::-1], 2), np.float32))
+            reports.append({'accepted': False, 'reason': 'fixed_reference_view', 'support_pixels': 0})
+            continue
         trusted = ((boundary == 0) & (owner != i)).astype(np.uint8)
         field, report = estimate_displacement(im, reference, mask, (owner >= 0).astype(np.uint8), trusted)
         fields.append(field)
         reports.append(report)
-    return fields, {'method': 'bounded_reference_flow', 'work_size': list(size), 'frames': reports}
+    fields = protect_view_centres(fields, valid, qualities, reference_index)
+    return fields, {'method': 'bounded_reference_flow', 'work_size': list(size),
+                    'reference_index': reference_index, 'protected_centres': True, 'frames': reports}

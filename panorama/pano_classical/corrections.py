@@ -106,6 +106,14 @@ class ClassicalCorrectionPipeline:
                 save_stage('00_object_removal_mask', object_mask)
                 save_stage('00_object_removal', out)
         masks = dict(defect_masks or {})
+        if toggles.get('shadow_removal', False):
+            if 'shadow' not in masks:
+                skipped['shadow_removal'] = 'requires an explicit shadow mask'
+            else:
+                from .shadow_removal import remove_shadows
+                out = remove_shadows(out, masks['shadow'])
+                applied.append('shadow_removal')
+                save_stage('01_shadow_removal', out)
         if correction_mask is not None:
             masks.setdefault('nadir_zenith', correction_mask)
         for stage in ('glare', 'dots', 'nadir_zenith'):
