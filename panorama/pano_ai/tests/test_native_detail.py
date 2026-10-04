@@ -60,6 +60,37 @@ class NativeDetailTests(unittest.TestCase):
             self.assertFalse(rgb[0, 2].any())
             self.assertGreater(float(disagreement[0, 0][observed].mean()), .3)
 
+    def test_photometric_blend_preserves_winner_texture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = self.sample(Path(tmp), [(80, 80, 80), (120, 120, 120)])
+            texture = np.indices((32, 32)).sum(0) % 2 * 30
+            for index, value in enumerate((80, 120)):
+                pixels = np.repeat((texture + value).astype(np.uint8)[..., None], 3, axis=2)
+                Image.fromarray(pixels).save(sample['frame_paths'][index])
+            source = NativeRGBSource(sample)
+            actual, coverage, _ = source((0, 0, 32, 64), (32, 64), torch.device('cpu'))
+            single = dict(sample, frame_paths=sample['frame_paths'][:1],
+                          poses=sample['poses'][:1], image_size=sample['image_size'][:1],
+                          camera_params=sample['camera_params'][:1])
+            original, _, _ = NativeRGBSource(single)((0, 0, 32, 64), (32, 64), torch.device('cpu'))
+            mask = coverage.expand_as(actual) > 0
+            # A uniform tonal correction preserves the sampled checkerboard exactly.
+            torch.testing.assert_close((actual-original)[mask],
+                                       torch.full_like(actual[mask], 20 / 255.), atol=2e-6, rtol=0)
+            crop, _, _ = source((7, 20, 13, 24), (32, 64), torch.device('cpu'))
+            torch.testing.assert_close(crop, actual[..., 7:20, 20:44], atol=2e-6, rtol=0)
+
+    def test_brightness_seam_is_feathered_without_filling_missing_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = self.sample(Path(tmp), [(80, 80, 80), (160, 160, 160)])
+            sample['poses'] = torch.tensor([[0., 0., 0.], [30., 0., 0.]])
+            rgb, coverage, _ = NativeRGBSource(sample)((0, 0, 128, 256), (128, 256), torch.device('cpu'))
+            row = rgb[0, 0, 64]
+            valid = coverage[0, 0, 64] > 0
+            adjacent = valid[1:] & valid[:-1]
+            self.assertLess(float((row[1:] - row[:-1]).abs()[adjacent].max()), .1)
+            self.assertFalse(rgb[coverage.expand_as(rgb) == 0].any())
+
     def test_native_skip_preserves_texture_and_learned_tile_continuity(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = NativeRGBSource(self.sample(Path(tmp)))
@@ -168,6 +199,13 @@ class NativeDetailTests(unittest.TestCase):
             output = run_tiled_inference(root / 'val' / 'scene', path, root / 'output')
             with Image.open(output / 'final_panorama.png') as image:
                 self.assertEqual(image.size, (64, 32))
+            state['contract'] = 'panorama_native_rgb_residual_v6'
+            torch.save(state, checkpoint)
+            config['inference']['allow_legacy_checkpoint'] = True
+            path.write_text(yaml.safe_dump(config), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'blending requires'):
+                run_tiled_inference(root / 'val' / 'scene', path, root / 'old_blend_output')
+            state['contract'] = panorama_contract('rgb_residual')
             # Architecture mismatch is rejected before loading weights, even
             # if the general legacy-comparison flag is enabled.
             state['config']['model']['detail'] = {'mode': 'features'}

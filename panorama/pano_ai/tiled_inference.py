@@ -77,6 +77,8 @@ def run_tiled_inference(
     detail = model_cfg.get('detail', {})
     detail_mode = detail.get('mode', 'features')
     expected_contract = panorama_contract(detail_mode)
+    if detail_mode == 'rgb_residual' and state.get('contract') != expected_contract:
+        raise ValueError(f'Native RGB blending requires {expected_contract}; retrain with the current preprocessing')
     trained_detail = state.get('config', {}).get('model', {}).get('detail', {})
     if (trained_detail.get('mode', 'features') != detail_mode
             or (detail_mode == 'rgb_residual' and trained_detail.get('residual_scale', .1) != detail.get('residual_scale', .1))):

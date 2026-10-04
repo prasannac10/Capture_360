@@ -11,7 +11,7 @@ def panorama_contract(detail_mode='features'):
     if detail_mode == 'features':
         return PANORAMA_CONTRACT
     if detail_mode == 'rgb_residual':
-        return 'panorama_native_rgb_residual_v6'
+        return 'panorama_native_rgb_residual_v7'
     raise ValueError('Unknown panorama detail mode')
 
 

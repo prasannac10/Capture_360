@@ -102,7 +102,7 @@ Run the complete pipeline on a calibrated capture scene:
 ```
 
 Neural stitching remains unvalidated for production quality. A checkpoint with
-`contract: panorama_native_rgb_residual_v6` is required for the default detail
+`contract: panorama_native_rgb_residual_v7` is required for the default detail
 architecture. A new checkpoint must be trained; the repository does not supply
 validated native-detail weights. Correction remains disabled
 in the shared config until its trained checkpoint has been evaluated.
@@ -148,16 +148,23 @@ detail refinement inside `PanoramaModel`, retaining `ai_pipeline.mode: tiled_neu
 It does not call the classical stitcher. Original calibrated photos are sampled
 directly onto each output tile, using the same exposure gains in training and
 inference. Both branches apply the estimated gains in linear light. One source
-wins each pixel by footprint quality, avoiding broad
-averaging of displaced views. The learned head receives RGB, coverage, overlap
+wins each pixel by footprint quality for fine texture. Full-source Gaussian
+low-frequency brightness and colour are feathered by camera footprint weights,
+with a smooth chromatic-conflict guard retaining ownership for incompatible views.
+This reduces tonal seams without averaging high-frequency displaced edges.
+It does not solve geometric misregistration, moving objects, or all spatial
+illumination differences. Filtering uses source coordinates so output tiles
+and longitude halos use identical photometry. The learned head receives RGB, coverage, overlap
 disagreement, and decoded scene features. Its final layer starts at zero,
 preserving observed RGB exactly before learning bounded residuals
 (`model.detail.residual_scale`, default 0.1). Unobserved pixels stay black.
 Output halos use periodic longitude and clamped poles.
 
 This architecture requires a new trained checkpoint with contract
-`panorama_native_rgb_residual_v6`. Old feature-only checkpoints are rejected even
+`panorama_native_rgb_residual_v7`. Old feature-only checkpoints are rejected even
 with `allow_legacy_checkpoint`; there is no automatic conversion to the new head.
+Native v6 checkpoints also require retraining: the native RGB input now includes
+deterministic photometric feathering. The legacy override cannot bypass this change.
 New checkpoint names are `panorama_native_detail_best.pt` and
 `panorama_native_detail_last.pt`, keeping legacy checkpoints separate. For legacy
 comparisons, explicitly select `model.detail.mode: features` and the old checkpoint.
@@ -226,7 +233,7 @@ restore the old training dimensions if retraining that architecture, and point
 `inference.checkpoint` to the v4 checkpoint. `allow_legacy_checkpoint` does not
 bypass a detail-mode or native residual-scale mismatch. Keep exposure settings
 consistent with checkpoint configuration. Training the separate combined model
-does not create the v6 panorama checkpoint.
+does not create the v7 panorama checkpoint.
 
 Before full training, validate scene alignment, source calibration and native
 reference dimensions; split by physical scene and run the native-detail tests
@@ -667,7 +674,7 @@ the legacy panorama decoder checkpoint in this mode.
 
 The default `ai_pipeline.mode: tiled_neural` runs the learned stitching model
 with `model.detail.mode: rgb_residual` first and correction second. Its checkpoint
-contract is `panorama_native_rgb_residual_v6`. The explicit feature-only detail
+contract is `panorama_native_rgb_residual_v7`. The explicit feature-only detail
 mode retains `panorama_exposure_blending_v4`. Architecture/residual-scale
 mismatches fail before loading weights; the legacy flag cannot convert weights.
 Feature fusion uses smooth tile weights, normalizes all tiles of each camera,
@@ -958,7 +965,7 @@ or poses; verified calibration/undistortion remains required. RAW decoding has
 not been validated on the supplied real scene locally because rawpy is absent.
 The default drone profile permits at most 30 frames; the supplied 33-frame scene
 needs an explicitly adjusted frame limit after calibration. Train with the default
-`rgb_residual` mode and a new v6 checkpoint.
+`rgb_residual` mode and a new v7 checkpoint.
 
 Existing full-resolution `.jpg`/`.jpeg` frames in `images/` are accepted by
 `prepare_native` and copied byte-for-byte, with no resize or recompression.
