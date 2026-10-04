@@ -44,7 +44,7 @@ python -m panorama.stitching.interface ai `
 ```
 
 The default `tiled_neural` / `rgb_residual` architecture requires a newly trained
-`panorama_native_rgb_residual_v6` checkpoint. It samples original RGB at native
+`panorama_native_rgb_residual_v7` checkpoint. It samples original RGB at native
 12K output coordinates and learns bounded residual corrections; no classical
 stitcher is used. Existing feature-only v4 checkpoints do not contain this head.
 
@@ -443,7 +443,7 @@ or poses; verified calibration/undistortion remains required. RAW decoding has
 not been validated on the supplied real scene locally because rawpy is absent.
 The default drone profile permits at most 30 frames; the supplied 33-frame scene
 needs an explicitly adjusted frame limit after calibration. Train with the default
-`rgb_residual` mode and a new v6 checkpoint.
+`rgb_residual` mode and a new v7 checkpoint.
 
 Existing full-resolution `.jpg`/`.jpeg` frames in `images/` are accepted by
 `prepare_native` and copied byte-for-byte, with no resize or recompression.

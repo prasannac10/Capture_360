@@ -132,7 +132,7 @@ coordinate grid without allocating a full high-resolution decoder output.
 panorama checkpoint (EMA when available/requested), runs `forward_scene`, saves
 the initial panorama, then invokes `HighResolutionCorrectionPipeline`.
 The default native-detail checkpoint is `panorama_native_detail_best.pt` with
-contract `panorama_native_rgb_residual_v6`. Training `combined` alone does not
+contract `panorama_native_rgb_residual_v7`. Training `combined` alone does not
 train this neural stitcher. The two-stage job trains both independently; it does
 not backpropagate correction loss into the panorama model or generate correction
 pairs automatically. With correction toggles disabled, the final RGB equals the
@@ -140,7 +140,7 @@ initial neural panorama.
 
 | Detail mode | RGB construction | Contract | Compatibility |
 | --- | --- | --- | --- |
-| `rgb_residual` (config default) | Native source RGB plus learned bounded residual | `panorama_native_rgb_residual_v6` | Requires newly trained weights |
+| `rgb_residual` (config default) | Native source RGB plus learned bounded residual | `panorama_native_rgb_residual_v7` | Requires newly trained weights |
 | `features` (explicit legacy mode) | Sigmoid RGB reconstructed from sampled coarse features | `panorama_exposure_blending_v4` | Existing matching v4 weights |
 
 Model constructors retain `features` as their default for old programmatic
@@ -164,7 +164,7 @@ flowchart TD
     loss["L1 1.0 + SSIM 0.2 + perceptual 0.1 + edge 0.2"]
     optimizer["AdamW, gradient clipping at norm 5<br/>Optional CUDA mixed precision + EMA"]
     validation["Up to five fixed native-scale validation crops<br/>Corners + centre, duplicate origins removed"]
-    checkpoint["Minimum weighted validation objective<br/>panorama_native_detail_best.pt<br/>panorama_native_rgb_residual_v6"]
+    checkpoint["Minimum weighted validation objective<br/>panorama_native_detail_best.pt<br/>panorama_native_rgb_residual_v7"]
     inference["Neural stitching followed by optional correction"]
     sources --> split --> preview --> crops --> model --> loss --> optimizer
     reference --> split
@@ -394,6 +394,6 @@ commands and held-out visual comparison.
 | `pano_ai/models/tile_spherical.py` | Global/region camera projection, float32 coordinates and feature fusion contracts |
 | `pano_ai/data/native_rgb.py` | Native RGB skip, hard ownership, coverage and disagreement |
 | `pano_ai/models/decoder.py`, `models/panorama_model.py` | Learned residual detail, periodic tiles and scene orchestration |
-| `pano_ai/train_tiled.py`, `train/panorama_loss.py` | Native crop optimization, edge loss, validation and v6 checkpoint saving |
+| `pano_ai/train_tiled.py`, `train/panorama_loss.py` | Native crop optimization, edge loss, validation and v7 checkpoint saving |
 | `pano_ai/tiled_inference.py` | Checkpoint guards, neural stitching, corrections and output metadata |
 | `pano_ai/highres_correction.py`, `models/combined_restoration.py` | Independent post-stitch restoration |

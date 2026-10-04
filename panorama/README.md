@@ -53,7 +53,7 @@ still requires held-out real mobile evaluation, full-panorama visual review and
 GPU resource checks. Combined correction can change any pixel and must be enabled
 alone among post-blend correction stages.
 
-The neural detail model uses `panorama_native_rgb_residual_v6` checkpoints;
+The neural detail model uses `panorama_native_rgb_residual_v7` checkpoints;
 feature-only v4 checkpoints cannot load its new head. Native RGB sampling avoids
 the alternative geometric compositor's 4096-pixel working-width cap. Neither
 12K export nor a native RGB skip guarantees recovered detail, corrected
