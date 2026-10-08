@@ -450,3 +450,49 @@ Existing full-resolution `.jpg`/`.jpeg` frames in `images/` are accepted by
 A JPEG-only scene needs neither DNG files nor rawpy. Calibration must match
 the JPEG pixel dimensions and orientation. Duplicate JPEG/DNG stems are rejected;
 select one source version per frame.
+
+## Seam-focused preparation and next training run
+
+Keep the configured 12000?6000 output and genuine target dimensions, and retain
+`rgb_residual`. The v7 photometric base is unchanged. New training samples actual
+source ownership boundaries rather than general disagreement; a four-pixel band
+around adjacent observed source changes defines the seam mask. Missing coverage
+is excluded. `loss.supervised.seam_weight: 0.2` adds boundary-band L1 and reference
+gradient error to existing losses. Training logs `seam_l1`, `seam_gradient_l1` and
+`seam_pixels`; zero seam error with zero seam pixels means no seam was evaluated.
+Validation uses five fixed crops plus up to three deterministic boundary crops.
+Crop metrics average by crop, so compare runs with the same evaluation regions.
+These changes provide targeted supervision, not a learned flow/alignment module.
+
+Compare native ownership, the existing photometric base, and trained inference
+before correction on identical native-scale crops:
+
+```powershell
+python -m panorama.pano_ai.train.diagnose_seams --scene /data/panorama/val/scene_0001 --config panorama/stitching/config.yaml --out outputs/seams_scene_0001 --region 1500 2000 1024 1024 --prediction /data/inference/scene_0001/initial_panorama.png
+```
+
+Region arguments are top, left, height, width in the full output pixel grid.
+Choose sky and wire/building boundary crops. The tool saves ownership, photometric,
+trained and reference crops, coverage/seam masks and JSON metrics. Omit
+`--prediction` to compare the two source baselines only. It rejects resized
+references/predictions and existing output directories. Geometry must be verified
+from calibrated source projections; broken edges may still require alignment.
+
+For correction training, create a local manifest with version 1 and pairs using
+actual initial AI outputs as `before`, clean reviewed aligned panoramas as `after`,
+unique `scene_id`, `site`, `split` (train/val), `domain`, `projection: equirectangular`,
+`alignment_verified: true`, `before_source: ai_stitcher`, and `stitcher_checkpoint`
+(the checkpoint path/version). Do not use edited labels as stitching references.
+Both image paths must resolve locally relative to the manifest. The downloaded
+S3 manifest must first be materialized and reviewed; its object keys are not local
+paths and cannot be relabelled as AI outputs.
+
+```powershell
+python -m panorama.pano_ai.data.prepare_pairs --manifest /data/ai_pairs.json --out outputs/ai_output_correction_bundle --require-ai-outputs
+python -m panorama.pano_ai.train.run_training --config panorama/pano_ai/train/configs/ai_output_correction_job.yaml
+```
+
+Packaging preserves checkpoint provenance and prevents site leakage. Keep combined correction
+disabled during stitcher evaluation. Enable the chosen correction checkpoint only
+after comparing held-out initial versus corrected outputs. Missing sky still
+requires separately validated filling or additional capture coverage.

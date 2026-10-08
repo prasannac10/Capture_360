@@ -17,8 +17,10 @@ class NativeRGBSource:
     Feather low-frequency photometry while retaining the winner's fine texture.
     Conflicting colours retain ownership. Geometry remains rotation-only.
     """
-    def __init__(self, sample, cache_frames=2, coverage_size=None):
+    def __init__(self, sample, cache_frames=2, coverage_size=None, photometric_blending=True):
         self.sample = sample
+        self.photometric_blending = photometric_blending
+        self.last_diagnostics = None
         self.cache_frames = max(1, cache_frames)
         self.cache = OrderedDict()
         self.coverage_map = torch.zeros(coverage_size, dtype=torch.bool) if coverage_size else None
@@ -50,6 +52,7 @@ class NativeRGBSource:
         top, left, height, width = region
         best = torch.zeros(1, 1, height, width, device=device)
         rgb = torch.zeros(1, 3, height, width, device=device)
+        owner = torch.full_like(best, -1, dtype=torch.long)
         total = torch.zeros_like(best)
         summed, squared = torch.zeros_like(rgb), torch.zeros_like(rgb)
         owner_low = torch.zeros_like(rgb)
@@ -89,6 +92,7 @@ class NativeRGBSource:
                 weight = confidence[:, 0]
                 choose = weight > best
                 rgb = torch.where(choose, color, rgb)
+                owner = torch.where(choose, index, owner)
                 owner_low = torch.where(choose, low, owner_low)
                 best = torch.maximum(best, weight)
                 total += weight
@@ -106,8 +110,19 @@ class NativeRGBSource:
             # do not disable feathering. High-frequency structure is never averaged.
             blend = ((.08 - chroma_spread) / .04).clamp(0, 1)
             blend = blend.square() * (3 - 2 * blend)
+            if not self.photometric_blending:
+                blend = torch.zeros_like(blend)
             rgb = (rgb + blend * (low_sum / total.clamp_min(1e-12) - owner_low)).clamp(0, 1)
         coverage = best > 0
+        boundary = torch.zeros_like(coverage)
+        horizontal = (owner[..., 1:] != owner[..., :-1]) & coverage[..., 1:] & coverage[..., :-1]
+        vertical = (owner[..., 1:, :] != owner[..., :-1, :]) & coverage[..., 1:, :] & coverage[..., :-1, :]
+        boundary[..., 1:] |= horizontal
+        boundary[..., :-1] |= horizontal
+        boundary[..., 1:, :] |= vertical
+        boundary[..., :-1, :] |= vertical
+        seam = F.max_pool2d(boundary.float(), 9, stride=1, padding=4) * coverage
+        self.last_diagnostics = dict(owner=owner, seam_mask=seam, coverage=coverage.float())
         if self.coverage_map is not None:
             oh, ow = output_size
             y0, x0 = max(0, top), max(0, left)

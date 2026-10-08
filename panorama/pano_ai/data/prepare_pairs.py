@@ -6,18 +6,23 @@ import shutil
 from PIL import Image
 
 
-def prepare(manifest, output, crop_size=1024):
+def prepare(manifest, output, crop_size=1024, require_ai_outputs=False):
     manifest, output = Path(manifest).resolve(), Path(output).resolve()
     data = json.loads(manifest.read_text(encoding='utf-8'))
     if data.get('version') != 1 or not data.get('pairs') or crop_size < 8:
         raise ValueError('Expected version=1, nonempty pairs list and crop_size >=8')
     groups, ids, prepared = {}, set(), []
     for row in data['pairs']:
+        if require_ai_outputs:
+            if row.get('before_source') != 'ai_stitcher' or not row.get('stitcher_checkpoint'):
+                raise ValueError('AI correction pairs require before_source=ai_stitcher and stitcher_checkpoint provenance')
+            if Path(row['before']).name.lower() in ('stitched.jpg', 'edited.jpg'):
+                raise ValueError('Use actual initial AI outputs, not PTGui reference images')
         name = row['scene_id']
         if not isinstance(name, str) or not name or not all(c.isalnum() or c in '_-' for c in name) or name in ids:
             raise ValueError('scene_id must be a unique safe folder name')
         ids.add(name)
-        group = row.get('source_scene_id', name)
+        group = row.get('site', row.get('source_scene_id', name))
         split = row['split']
         if not isinstance(group, str) or not group:
             raise ValueError('source_scene_id must identify the physical location')
@@ -53,6 +58,9 @@ def prepare(manifest, output, crop_size=1024):
         folder.mkdir(parents=True)
         record = {k: row[k] for k in ('scene_id', 'domain', 'projection', 'alignment_verified')}
         record['source_scene_id'] = group
+        for key in ('before_source', 'stitcher_checkpoint', 'site'):
+            if key in row:
+                record[key] = row[key]
         for key, path in zip(('before', 'after'), paths):
             filename = key + path.suffix.lower()
             shutil.copy2(path, folder / filename)
@@ -68,8 +76,9 @@ def main():
     parser.add_argument('--manifest', required=True)
     parser.add_argument('--out', required=True)
     parser.add_argument('--crop-size', type=int, default=1024)
+    parser.add_argument('--require-ai-outputs', action='store_true', help='Require AI stitcher provenance for correction training')
     args = parser.parse_args()
-    print(json.dumps(prepare(args.manifest, args.out, args.crop_size), indent=2))
+    print(json.dumps(prepare(args.manifest, args.out, args.crop_size, args.require_ai_outputs), indent=2))
 
 
 if __name__ == '__main__':

@@ -1,0 +1,22 @@
+# Run AFTER the chosen stitcher has produced reviewed correction pairs.
+# Package them with prepare_pairs --require-ai-outputs before launching this job.
+dataset_root: ../../../../outputs/ai_output_correction_bundle
+cache_dir: ../../../../outputs/dataset_cache
+output_dir: ../../../../outputs/ai_output_correction_training
+pipeline_config: ../../../stitching/config.yaml
+seed: 42
+cpu_threads: 8
+epochs: 10
+tasks: [combined]
+combined:
+  loss: {l1: 1.0, ssim: 0.2, gradient: 0.2, multiscale: 0.1, changed_regions: 2.0}
+  input_size: [1024, 1024]
+  crops_per_scene: 12
+  changed_crop_probability: 0.5
+  base_channels: 32
+  batch_size: 1
+  lr: 0.0001
+  num_workers: 6
+mobile_validation:
+  enabled: false
+  path: restoration/mobile_val

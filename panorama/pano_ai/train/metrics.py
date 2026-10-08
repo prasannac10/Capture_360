@@ -45,3 +45,25 @@ def lpips(pred, target):
         return float(net(pred * 2 - 1, target * 2 - 1).mean().detach().cpu())
     except ImportError:
         return None
+
+
+@torch.no_grad()
+def seam_quality(pred, target, seam_mask):
+    """Reference error in observed source ownership bands; not a geometry estimate."""
+    pred, target = pred.float(), target.float()
+    mask = seam_mask.to(pred)
+    count = float(mask.sum())
+    l1 = float(((pred-target).abs()*mask).sum()/(mask.sum()*pred.shape[1]).clamp_min(1))
+    errors, counts = [], []
+    for axis in (-1, -2):
+        if pred.shape[axis] <= 1:
+            continue
+        lo, hi = [slice(None)]*4, [slice(None)]*4
+        lo[axis], hi[axis] = slice(None,-1), slice(1,None)
+        lo, hi = tuple(lo), tuple(hi)
+        valid = mask[lo]*mask[hi]
+        error = ((pred[hi]-pred[lo])-(target[hi]-target[lo])).abs()
+        errors.append((error*valid).sum())
+        counts.append(valid.sum()*pred.shape[1])
+    edge = float(sum(errors)/sum(counts).clamp_min(1)) if counts else 0.
+    return dict(seam_l1=l1, seam_gradient_l1=edge, seam_pixels=count)

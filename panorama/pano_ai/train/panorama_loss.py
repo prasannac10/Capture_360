@@ -11,7 +11,7 @@ class PanoramaLoss(nn.Module):
         super().__init__()
         if any(float(value) != 0 for value in config.get('geometry', {}).values()):
             raise NotImplementedError('Geometry loss needs geometry predictions; set geometry weights to zero')
-        self.weights = {'l1_weight': 1., 'ssim_weight': 0., 'perceptual_weight': 0., 'edge_weight': 0.}
+        self.weights = {'l1_weight': 1., 'ssim_weight': 0., 'perceptual_weight': 0., 'edge_weight': 0., 'seam_weight': 0.}
         supplied = config.get('supervised', {})
         if set(supplied) - self.weights.keys():
             raise ValueError('Unknown supervised loss weight')
@@ -26,7 +26,7 @@ class PanoramaLoss(nn.Module):
         self.register_buffer('mean', torch.tensor([.485, .456, .406]).view(1, 3, 1, 1))
         self.register_buffer('std', torch.tensor([.229, .224, .225]).view(1, 3, 1, 1))
 
-    def forward(self, prediction, target, mask=None):
+    def forward(self, prediction, target, mask=None, seam_mask=None):
         prediction, target = prediction.float(), target.float()
         if mask is not None:
             mask = mask.to(prediction).expand_as(prediction)
@@ -56,6 +56,21 @@ class PanoramaLoss(nn.Module):
             similarity = ((2 * a * b + .01 ** 2) * (2 * covariance + .03 ** 2)
                           / ((a.square() + b.square() + .01 ** 2) * (va + vb + .03 ** 2)))
             loss = loss + self.weights['ssim_weight'] * reduce(1 - similarity, None if mask is None else (mean(mask) >= 1 - 1e-6).to(mask))
+        if self.weights['seam_weight'] and seam_mask is not None:
+            seam = seam_mask.to(prediction).expand_as(prediction)
+            if mask is not None:
+                seam = seam * mask
+            seam_loss = reduce((prediction - target).abs(), seam)
+            for axis in (-1, -2):
+                if prediction.shape[axis] <= 1:
+                    continue
+                lo, hi = [slice(None)] * 4, [slice(None)] * 4
+                lo[axis], hi[axis] = slice(None, -1), slice(1, None)
+                lo, hi = tuple(lo), tuple(hi)
+                valid = seam[lo] * seam[hi]
+                error = ((prediction[hi]-prediction[lo])-(target[hi]-target[lo])).abs()
+                seam_loss = seam_loss + reduce(error, valid)
+            loss = loss + self.weights['seam_weight'] * seam_loss
         if self.perceptual is not None:
             self.perceptual.eval()
             # Bound perceptual feature memory; full-resolution L1 still applies.

@@ -23,7 +23,10 @@ class TrainingLogger:
                        'pixel_accuracy_pct': 'Percent of pixels with all RGB channel errors <= 8/255; not classification accuracy',
                        'psnr': 'Mean per-image PSNR in dB, capped at 99 for exact matches',
                        'ssim': 'Mean per-image global SSIM proxy, not windowed SSIM',
-                       'l1': 'Mean absolute RGB error in [0,1]'}, **details)
+                       'l1': 'Mean absolute RGB error in [0,1]',
+                       'seam_l1': 'RGB reference error in observed ownership boundary bands',
+                       'seam_gradient_l1': 'Reference gradient error within ownership boundary bands',
+                       'seam_pixels': 'Evaluated seam pixels; zero means no seam observed'}, **details)
 
     @staticmethod
     def learning_rates(optimizer):
@@ -48,7 +51,7 @@ class TrainingLogger:
         for name, metrics in (('train', train), ('val', validation), ('mobile', mobile)):
             if metrics is None:
                 continue
-            for key in ('loss', 'l1', 'pixel_accuracy_pct', 'psnr', 'ssim'):
+            for key in ('loss', 'l1', 'pixel_accuracy_pct', 'psnr', 'ssim', 'seam_l1', 'seam_gradient_l1', 'seam_pixels'):
                 if key in metrics:
                     label = 'ssim_global' if key == 'ssim' else key
                     fields.append(f'{name}_{label}={metrics[key]:.6f}')

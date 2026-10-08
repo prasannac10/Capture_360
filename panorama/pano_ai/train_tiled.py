@@ -15,7 +15,7 @@ from .models.tile_spherical import panorama_contract
 from .data.native_rgb import NativeRGBSource
 from .utils.ema import EMA
 from .train.panorama_loss import PanoramaLoss
-from .train.metrics import image_quality
+from .train.metrics import image_quality, seam_quality
 from .train.logging import TrainingLogger
 from panorama.stitching.profiles import validate_frame_set
 
@@ -48,7 +48,7 @@ def run_scene(
             supported = coverage[0, 0] > 0
             candidates = torch.nonzero(supported)
             if float(torch.rand(())) < sample.get('_seam_crop_probability', .5):
-                seams = torch.nonzero((disagreement[0, 0] > .02) & supported)
+                seams = torch.nonzero((source_sampler.last_diagnostics['seam_mask'][0, 0] > 0) & supported)
                 if len(seams):
                     candidates = seams
             if not len(candidates):
@@ -85,7 +85,7 @@ def run_scene(
             if not bool(coverage.any()):
                 raise ValueError('Training/evaluation crop has no observed source pixels')
         if criterion is not None:
-            loss = criterion(pred, gt, mask=coverage) if native else criterion(pred, gt)
+            loss = criterion(pred, gt, mask=coverage, seam_mask=source_sampler.last_diagnostics['seam_mask']) if native else criterion(pred, gt)
         elif coverage is not None:
             loss = ((pred - gt).abs() * coverage).sum() / (coverage.sum() * pred.shape[1]).clamp_min(1)
         else:
@@ -93,6 +93,8 @@ def run_scene(
         if not torch.isfinite(loss):
             raise ValueError('Non-finite panorama training loss')
         quality = image_quality(pred, gt, mask=coverage) if return_metrics else None
+        if return_metrics and native:
+            quality.update(seam_quality(pred, gt, source_sampler.last_diagnostics['seam_mask']))
         if train:
             if scaler and scaler.is_enabled():
                 old_scale = scaler.get_scale()
@@ -188,7 +190,7 @@ def main(argv=None):
                             mixed_precision=scaler.is_enabled(),
                             validation_weights='ema' if ema else 'model',
                             loss_definition='weighted panorama objective; l1 is logged separately',
-                            evaluation_scope='five fixed native-scale crops per scene' if native else 'full panorama')
+                            evaluation_scope='five fixed plus up to three ownership-boundary native crops per scene' if native else 'full panorama')
 
     def prep(s):
         s = dict(s)
@@ -240,6 +242,17 @@ def main(argv=None):
                     ch, cw = min(sample['_native_crop_size'], oh), min(sample['_native_crop_size'], ow)
                     origins = list(dict.fromkeys([(0, 0), (0, ow - cw), (oh - ch, 0),
                                                    (oh - ch, ow - cw), ((oh - ch) // 2, (ow - cw) // 2)]))
+                    preview = NativeRGBSource(sample)
+                    ph, pw = min(128, oh), min(256, ow)
+                    preview((0, 0, ph, pw), (ph, pw), dev)
+                    boundary_pixels = torch.nonzero(preview.last_diagnostics['seam_mask'][0, 0] > 0)
+                    if len(boundary_pixels):
+                        for index in sorted(set((len(boundary_pixels)//4, len(boundary_pixels)//2, 3*len(boundary_pixels)//4))):
+                            row, col = boundary_pixels[index].tolist()
+                            origin = (max(0,min(oh-ch,round((row+.5)*oh/ph)-ch//2)),
+                                      max(0,min(ow-cw,round((col+.5)*ow/pw)-cw//2)))
+                            if origin not in origins:
+                                origins.append(origin)
                 else:
                     origins = [None]
                 for origin in origins:
